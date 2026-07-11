@@ -13,4 +13,4 @@
 请使用 `root` 用户登录您的 Debian 12/13 服务器，复制并运行以下命令：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/你的用户名/BBRv3-Onekey/main/bbr3.sh)
+bash <(curl -fsSL https://github.com/ZhangSir9901/BBRv3-Onekey/blob/main/bbr3.sh)
