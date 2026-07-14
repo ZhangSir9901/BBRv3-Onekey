@@ -307,20 +307,20 @@ rm -f "$TMP_KEY"
 
 echo -e "${YELLOW}正在获取 XanMod PGP 密钥 (引入反反爬虫伪装机制)...${PLAIN}"
 
-# 构造极度逼真的 Windows Chrome 浏览器 User-Agent，规避 Cloudflare 403 拦截
+# 构造极度逼真且不易被封锁的 User-Agent 标头
 FAKE_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
-# 冗余策略 1: curl 伪装 UA 下载
-curl -fsSL -A "${FAKE_UA}" --connect-timeout 10 --retry 3 https://dl.xanmod.org/archive.key -o "$TMP_KEY"
+# 冗余策略 1: curl 伪装 UA 下载 (错误重定向到垃圾桶 2>/dev/null)
+curl -fsSL -A "${FAKE_UA}" --connect-timeout 10 --retry 3 https://dl.xanmod.org/archive.key -o "$TMP_KEY" 2>/dev/null
 
-# 冗余策略 2: wget 伪装 UA 下载
+# 冗余策略 2: wget 伪装 UA 下载 (错误重定向到垃圾桶 2>/dev/null)
 if [ ! -s "$TMP_KEY" ] || ! grep -q "PGP PUBLIC KEY" "$TMP_KEY"; then
-    wget -qO "$TMP_KEY" -U "${FAKE_UA}" --timeout=10 --tries=3 https://dl.xanmod.org/archive.key
+    wget -qO "$TMP_KEY" -U "${FAKE_UA}" --timeout=10 --tries=3 https://dl.xanmod.org/archive.key >/dev/null 2>&1
 fi
 
-# 冗余策略 3: curl 强制 IPv4 + 伪装 UA (绕过某些厂商的 IPv6 黑洞)
+# 冗余策略 3: curl 强制 IPv4 + 伪装 UA (错误重定向到垃圾桶 2>/dev/null)
 if [ ! -s "$TMP_KEY" ] || ! grep -q "PGP PUBLIC KEY" "$TMP_KEY"; then
-    curl -fsSL -4 -A "${FAKE_UA}" --connect-timeout 10 --retry 3 https://dl.xanmod.org/archive.key -o "$TMP_KEY"
+    curl -fsSL -4 -A "${FAKE_UA}" --connect-timeout 10 --retry 3 https://dl.xanmod.org/archive.key -o "$TMP_KEY" 2>/dev/null
 fi
 
 # 最终文件合法性校验
