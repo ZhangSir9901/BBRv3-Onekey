@@ -32,7 +32,7 @@ if [ "$ID" != "debian" ] || { [ "$VERSION_ID" != "12" ] && [ "$VERSION_ID" != "1
     exit 1
 fi
 
-# 2. 预检并安装基础依赖 (新增 ca-certificates 修复 HTTPS 验证报错)
+# 2. 预检并安装基础依赖
 if ! command -v gpg >/dev/null || ! command -v wget >/dev/null || ! command -v curl >/dev/null || [ ! -d /etc/ssl/certs ]; then
     echo -e "${BLUE}正在检查并安装系统必要依赖程序...${PLAIN}"
     apt update && apt install wget curl gnupg lsb-release ca-certificates -y
@@ -145,14 +145,13 @@ clean_sysctl() {
     sed -i '/net.ipv4.tcp_dsack/d' /etc/sysctl.conf
 }
 
-# 8. 闭合状态体检菜单项（验证与高亮状态评估）
+# 8. 闭合状态体检菜单项
 verify_status() {
     clear
     echo -e "${BLUE}==================================================${PLAIN}"
     echo -e "         🔍 正在检测内核及网络加速算法生效状态...     "
     echo -e "${BLUE}==================================================${PLAIN}"
     
-    # 1. 检测内核是否为 XanMod
     local kernel_active=false
     local current_k=$(uname -r)
     if [[ "$current_k" == *"xanmod"* ]]; then
@@ -162,7 +161,6 @@ verify_status() {
         echo -e "1. 内核检测: ${RED}[ 异常 ]${PLAIN} (未检测到 XanMod，当前为: $current_k)"
     fi
     
-    # 2. 检测拥塞控制算法
     local bbr_active=false
     local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
     if [ "$current_cc" = "bbr" ]; then
@@ -172,14 +170,12 @@ verify_status() {
         echo -e "2. 拥塞控制: ${RED}[ 异常 ]${PLAIN} (未启用 BBR，当前为: ${current_cc:-无})"
     fi
     
-    # 3. 检测实时网卡队列调度算法 (qdisc)
     local current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
     local active_qdisc=$(tc qdisc show | grep -E "fq|fq_codel|cake" | awk '{print $2}' | head -n 1)
     
     echo -e "3. 队列算法: ${GREEN}[ 正常 ]${PLAIN} (预设: $current_qdisc | 生效: ${active_qdisc:-未检测到})"
     
     echo -e "${BLUE}==================================================${PLAIN}"
-    # 状态评估输出（包含内核与BBR加速状态显式高亮显示）
     if [ "$kernel_active" = "true" ] && [ "$bbr_active" = "true" ]; then
         echo -e "${GREEN}🎉 状态评估：BBRv3 网络加速调优已完美生效！${PLAIN}"
         echo -e "   👉 ${GREEN}当前内核: $current_k (XanMod 性能内核)${PLAIN}"
@@ -197,7 +193,6 @@ verify_status() {
 # 9. 脚本主循环交互菜单
 while true; do
     clear
-    # 动态检测当前运行内核
     CURRENT_KERNEL=$(uname -r)
     ALREADY_XANMOD=false
     if [[ "$CURRENT_KERNEL" == *"xanmod"* ]]; then
@@ -232,7 +227,6 @@ while true; do
 
     case "$CHOICE" in
         1|2|3|4)
-            # 如果已经是 XanMod，高亮提醒
             if [ "$ALREADY_XANMOD" = "true" ]; then
                 clear
                 echo -e "${YELLOW}==================================================${PLAIN}"
@@ -246,19 +240,11 @@ while true; do
                     exit 0
                 fi
             fi
-            break # 跳出菜单循环，向下执行安装
+            break
             ;;
-        5)
-            verify_status
-            ;;
-        0)
-            echo -e "${BLUE}已安全退出脚本。${PLAIN}"
-            exit 0
-            ;;
-        *)
-            echo -e "${RED}[错误] 输入无效，请重新选择！${PLAIN}"
-            sleep 1
-            ;;
+        5) verify_status ;;
+        0) echo -e "${BLUE}已安全退出脚本。${PLAIN}"; exit 0 ;;
+        *) echo -e "${RED}[错误] 输入无效，请重新选择！${PLAIN}"; sleep 1 ;;
     esac
 done
 
@@ -311,7 +297,7 @@ case "$CHOICE" in
         ;;
 esac
 
-# 10. 开始执行源配置与更新 (修复 PGP 下载机制)
+# 10. 开始执行源配置与更新 (深度修复：UA伪装突破 403 拦截)
 echo -e "\n${BLUE}[3/5] 开始配置 XanMod 官方存储库...${PLAIN}"
 rm -f /etc/apt/sources.list.d/xanmod-release.list
 
@@ -319,20 +305,22 @@ install -d -m 0755 /etc/apt/keyrings
 TMP_KEY="/tmp/xanmod.key"
 rm -f "$TMP_KEY"
 
-echo -e "${YELLOW}正在获取 XanMod PGP 密钥 (多重冗余机制)...${PLAIN}"
-# 冗余策略1: curl 默认
-curl -fsSL --connect-timeout 10 --retry 3 https://dl.xanmod.org/archive.key -o "$TMP_KEY"
-# 冗余策略2: wget 默认
+echo -e "${YELLOW}正在获取 XanMod PGP 密钥 (引入反反爬虫伪装机制)...${PLAIN}"
+
+# 构造极度逼真的 Windows Chrome 浏览器 User-Agent，规避 Cloudflare 403 拦截
+FAKE_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
+# 冗余策略 1: curl 伪装 UA 下载
+curl -fsSL -A "${FAKE_UA}" --connect-timeout 10 --retry 3 https://dl.xanmod.org/archive.key -o "$TMP_KEY"
+
+# 冗余策略 2: wget 伪装 UA 下载
 if [ ! -s "$TMP_KEY" ] || ! grep -q "PGP PUBLIC KEY" "$TMP_KEY"; then
-    wget -qO "$TMP_KEY" --timeout=10 --tries=3 https://dl.xanmod.org/archive.key
+    wget -qO "$TMP_KEY" -U "${FAKE_UA}" --timeout=10 --tries=3 https://dl.xanmod.org/archive.key
 fi
-# 冗余策略3: curl 强制 IPv4 (对抗 IPv6 黑洞)
+
+# 冗余策略 3: curl 强制 IPv4 + 伪装 UA (绕过某些厂商的 IPv6 黑洞)
 if [ ! -s "$TMP_KEY" ] || ! grep -q "PGP PUBLIC KEY" "$TMP_KEY"; then
-    curl -fsSL -4 --connect-timeout 10 --retry 3 https://dl.xanmod.org/archive.key -o "$TMP_KEY"
-fi
-# 冗余策略4: wget 强制 IPv4
-if [ ! -s "$TMP_KEY" ] || ! grep -q "PGP PUBLIC KEY" "$TMP_KEY"; then
-    wget -4 -qO "$TMP_KEY" --timeout=10 --tries=3 https://dl.xanmod.org/archive.key
+    curl -fsSL -4 -A "${FAKE_UA}" --connect-timeout 10 --retry 3 https://dl.xanmod.org/archive.key -o "$TMP_KEY"
 fi
 
 # 最终文件合法性校验
@@ -342,8 +330,8 @@ if [ -s "$TMP_KEY" ] && grep -q "PGP PUBLIC KEY" "$TMP_KEY"; then
     echo -e "${GREEN}[成功] PGP 证书导入完成！${PLAIN}"
 else
     echo -e "${RED}[错误] PGP 证书获取失败！可能原因：${PLAIN}"
-    echo -e "${RED}1. VPS 无法连接到 dl.xanmod.org (被墙或无 IPv4 路由)${PLAIN}"
-    echo -e "${RED}2. 系统仍缺少有效 CA 证书${PLAIN}"
+    echo -e "${RED}1. XanMod 官网已将您当前云厂商的 IP (ASN) 彻底拉黑封锁。${PLAIN}"
+    echo -e "${RED}2. 您的服务器与 dl.xanmod.org 之间的网络连接被强制阻断。${PLAIN}"
     exit 1
 fi
 
@@ -352,7 +340,7 @@ echo "deb [signed-by=/etc/apt/keyrings/xanmod-archive-keyring.gpg] http://deb.xa
 # 执行源更新
 retry_command apt update
 if [ $? -ne 0 ]; then
-    echo -e "${RED}[错误] 软件源更新失败！${PLAIN}"
+    echo -e "${RED}[错误] 软件源更新失败！这通常是因为被墙或源服务器拒绝访问。${PLAIN}"
     exit 1
 fi
 
@@ -385,7 +373,7 @@ if [ "$SKIP_KERNEL_INSTALL" = "false" ]; then
     NEED_REBOOT=true
 fi
 
-# 12. 更新引导（仅在真正安装/升级了内核时执行）
+# 12. 更新引导
 if [ "$NEED_REBOOT" = "true" ]; then
     echo -e "\n${BLUE}[5/5] 正在强行更新 GRUB 系统引导配置...${PLAIN}"
     retry_command update-grub
@@ -421,11 +409,10 @@ if [ "$NEED_REBOOT" = "true" ]; then
     echo -e "\n${GREEN}正在重启服务器...${PLAIN}"
     reboot
 else
-    # 获取实时运行内核名
     REAL_K=$(uname -r)
     echo -e "${GREEN}🎉 提示：由于内核已是最新，新调优参数已立即应用，无需重启！${PLAIN}"
     echo -e "当前运行内核：${BLUE}${REAL_K}${PLAIN}"
     echo -e "BBR加速状态 ：${BLUE}已立即热应用最新网络调优配置${PLAIN}"
-    echo -e "您可立即使用 `tc qdisc show` 或再次运行本脚本选项 5 进行实时验证。${PLAIN}"
+    echo -e "您可立即使用再次运行本脚本选项 5 进行实时验证。${PLAIN}"
     echo -e "${GREEN}==================================================${PLAIN}"
 fi
