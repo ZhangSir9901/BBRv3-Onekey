@@ -32,10 +32,10 @@ if [ "$ID" != "debian" ] || { [ "$VERSION_ID" != "12" ] && [ "$VERSION_ID" != "1
     exit 1
 fi
 
-# 2. 预检并安装基础依赖
-if ! command -v gpg >/dev/null || ! command -v wget >/dev/null || ! command -v curl >/dev/null; then
+# 2. 预检并安装基础依赖 (新增 ca-certificates 修复 HTTPS 验证报错)
+if ! command -v gpg >/dev/null || ! command -v wget >/dev/null || ! command -v curl >/dev/null || [ ! -d /etc/ssl/certs ]; then
     echo -e "${BLUE}正在检查并安装系统必要依赖程序...${PLAIN}"
-    apt update && apt install wget curl gnupg lsb-release -y
+    apt update && apt install wget curl gnupg lsb-release ca-certificates -y
 fi
 
 # 3. 高精度地理位置识别
@@ -311,14 +311,39 @@ case "$CHOICE" in
         ;;
 esac
 
-# 10. 开始执行源配置与更新
+# 10. 开始执行源配置与更新 (修复 PGP 下载机制)
 echo -e "\n${BLUE}[3/5] 开始配置 XanMod 官方存储库...${PLAIN}"
 rm -f /etc/apt/sources.list.d/xanmod-release.list
 
-mkdir -p /etc/apt/keyrings
-retry_command wget -qO - https://dl.xanmod.org/archive.key | gpg --dearmor --yes -o /etc/apt/keyrings/xanmod-archive-keyring.gpg
-if [ $? -ne 0 ]; then
-    echo -e "${RED}[错误] PGP 证书导入失败！请检查系统网络连接。${PLAIN}"
+install -d -m 0755 /etc/apt/keyrings
+TMP_KEY="/tmp/xanmod.key"
+rm -f "$TMP_KEY"
+
+echo -e "${YELLOW}正在获取 XanMod PGP 密钥 (多重冗余机制)...${PLAIN}"
+# 冗余策略1: curl 默认
+curl -fsSL --connect-timeout 10 --retry 3 https://dl.xanmod.org/archive.key -o "$TMP_KEY"
+# 冗余策略2: wget 默认
+if [ ! -s "$TMP_KEY" ] || ! grep -q "PGP PUBLIC KEY" "$TMP_KEY"; then
+    wget -qO "$TMP_KEY" --timeout=10 --tries=3 https://dl.xanmod.org/archive.key
+fi
+# 冗余策略3: curl 强制 IPv4 (对抗 IPv6 黑洞)
+if [ ! -s "$TMP_KEY" ] || ! grep -q "PGP PUBLIC KEY" "$TMP_KEY"; then
+    curl -fsSL -4 --connect-timeout 10 --retry 3 https://dl.xanmod.org/archive.key -o "$TMP_KEY"
+fi
+# 冗余策略4: wget 强制 IPv4
+if [ ! -s "$TMP_KEY" ] || ! grep -q "PGP PUBLIC KEY" "$TMP_KEY"; then
+    wget -4 -qO "$TMP_KEY" --timeout=10 --tries=3 https://dl.xanmod.org/archive.key
+fi
+
+# 最终文件合法性校验
+if [ -s "$TMP_KEY" ] && grep -q "PGP PUBLIC KEY" "$TMP_KEY"; then
+    gpg --dearmor --yes -o /etc/apt/keyrings/xanmod-archive-keyring.gpg "$TMP_KEY"
+    rm -f "$TMP_KEY"
+    echo -e "${GREEN}[成功] PGP 证书导入完成！${PLAIN}"
+else
+    echo -e "${RED}[错误] PGP 证书获取失败！可能原因：${PLAIN}"
+    echo -e "${RED}1. VPS 无法连接到 dl.xanmod.org (被墙或无 IPv4 路由)${PLAIN}"
+    echo -e "${RED}2. 系统仍缺少有效 CA 证书${PLAIN}"
     exit 1
 fi
 
@@ -373,7 +398,7 @@ fi
 # 13. 应用系统优化配置
 sysctl -p > /dev/null
 
-# 14. 漂亮的执行结果输出 (已集成最新内核及BBR高亮显示)
+# 14. 漂亮的执行结果输出
 clear
 echo -e "${GREEN}==================================================${PLAIN}"
 echo -e "          🎉 内核配置与网络调优执行完毕！"
