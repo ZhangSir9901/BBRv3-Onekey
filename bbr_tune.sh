@@ -63,10 +63,9 @@ get_country_code() {
 
 COUNTRY_CODE=$(get_country_code)
 COUNTRY_CODE=$(echo "$COUNTRY_CODE" | tr '[:lower:]' '[:upper:]')
-IS_ASIA_PACIFIC=false
 
 case "$COUNTRY_CODE" in
-    HK|JP|KR|SG|MY|PH|TW|TH|VN|ID) IS_ASIA_PACIFIC=true ; COUNTRY_NAME="亚太地区 (${COUNTRY_CODE})" ;;
+    HK|JP|KR|SG|MY|PH|TW|TH|VN|ID) COUNTRY_NAME="亚太地区 (${COUNTRY_CODE})" ;;
     US|CA) COUNTRY_NAME="北美洲 (${COUNTRY_CODE})" ;;
     GB|UK|DE|NL|FR|RU) COUNTRY_NAME="欧洲 (${COUNTRY_CODE})" ;;
     *) COUNTRY_NAME="${COUNTRY_CODE}";;
@@ -97,7 +96,7 @@ retry_command() {
     return 0
 }
 
-# 6. 深度清理旧系统参数 (包含新增参数)
+# 6. 深度清理旧系统参数
 clean_sysctl() {
     local params=(
         "net.core.default_qdisc" "net.ipv4.tcp_congestion_control" "net.ipv4.tcp_rmem" "net.ipv4.tcp_wmem"
@@ -111,7 +110,7 @@ clean_sysctl() {
     done
 }
 
-# 7. 核心功能：写入基础深度优化参数 (双轨通用部分)
+# 7. 写入基础深度优化参数 (双轨通用部分)
 write_base_sysctl() {
     cat >> /etc/sysctl.conf << EOF
 # --- 底层并发与防排队优化 ---
@@ -137,30 +136,54 @@ net.ipv4.tcp_dsack=1
 EOF
 }
 
-# 8. 状态体验验证功能
+# 8. 状态体检验证功能 (选项3)
 verify_status() {
     clear
     echo -e "${BLUE}==================================================${PLAIN}"
-    echo -e "         🔍 正在检测内核及网络加速算法生效状态     "
+    echo -e "         🔍 正在深度体检网络加速与优化状态        "
     echo -e "${BLUE}==================================================${PLAIN}"
     
     local current_k=$(uname -r)
+    local kernel_ok=false
     if [[ "$current_k" == *"xanmod"* ]]; then
-        echo -e "1. 内核检测: ${GREEN}[ 正常 ]${PLAIN} ($current_k)"
+        echo -e "1. 内核检测: ${GREEN}[ 正常 ]${PLAIN} (当前运行: $current_k)"
+        kernel_ok=true
     else
-        echo -e "1. 内核检测: ${RED}[ 异常 ]${PLAIN} (未检测到 XanMod)"
+        echo -e "1. 内核检测: ${YELLOW}[ 未启用 XanMod ]${PLAIN} (当前为: $current_k)"
     fi
     
     local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local bbr_ok=false
     if [ "$current_cc" = "bbr" ]; then
-        echo -e "2. 拥塞控制: ${GREEN}[ 正常 ]${PLAIN} (BBR 开启)"
+        if [ "$kernel_ok" = "true" ]; then
+            echo -e "2. 拥塞控制: ${GREEN}[ 正常 ]${PLAIN} (已启用 BBRv3 硬件加速引擎)"
+            bbr_ok=true
+        else
+            echo -e "2. 拥塞控制: ${YELLOW}[ 正常 ]${PLAIN} (已启用标准内核 BBRv1)"
+            bbr_ok=true
+        fi
     else
-        echo -e "2. 拥塞控制: ${RED}[ 异常 ]${PLAIN} (当前为: ${current_cc:-无})"
+        echo -e "2. 拥塞控制: ${RED}[ 异常 ]${PLAIN} (未启用 BBR，当前为: ${current_cc:-无})"
     fi
     
+    local current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
     local active_qdisc=$(tc qdisc show | grep -E "fq|fq_codel|cake" | awk '{print $2}' | head -n 1)
-    echo -e "3. 队列算法: ${GREEN}[ 正常 ]${PLAIN} (生效: ${active_qdisc:-未检测到})"
+    echo -e "3. 队列算法: ${GREEN}[ 正常 ]${PLAIN} (预设: ${current_qdisc:-无} | 生效: ${active_qdisc:-未检测到})"
     
+    local current_notsent=$(sysctl -n net.ipv4.tcp_notsent_lowat 2>/dev/null)
+    local current_reuse=$(sysctl -n net.ipv4.tcp_tw_reuse 2>/dev/null)
+    if [ "$current_notsent" = "16384" ] && [ "$current_reuse" = "1" ]; then
+        echo -e "4. 深度调优: ${GREEN}[ 完美生效 ]${PLAIN} (防膨胀/端口复用/PMTU黑洞探测均已开启)"
+    else
+        echo -e "4. 深度调优: ${YELLOW}[ 未完全调优 ]${PLAIN} (部分高级参数未写入)"
+    fi
+
+    echo -e "${BLUE}==================================================${PLAIN}"
+    if [ "$kernel_ok" = "true" ] && [ "$bbr_ok" = "true" ] && [ "$current_notsent" = "16384" ]; then
+        echo -e "${GREEN}🎉 综合评估：服务器处于【深度优化后的最佳状态】，性能已拉满！${PLAIN}"
+    else
+        echo -e "${YELLOW}⚠️ 综合评估：系统尚未完全调优，建议在主菜单选择 [1] 执行一键优化。${PLAIN}"
+    fi
     echo -e "${BLUE}==================================================${PLAIN}"
     read -p "按回车键返回主菜单..."
 }
@@ -174,19 +197,46 @@ while true; do
         ALREADY_XANMOD=true
     fi
 
+    # 动态检测当前运行状态
+    CURRENT_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    CURRENT_QDISC=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    CURRENT_NOTSENT=$(sysctl -n net.ipv4.tcp_notsent_lowat 2>/dev/null)
+    CURRENT_REUSE=$(sysctl -n net.ipv4.tcp_tw_reuse 2>/dev/null)
+
+    # 判定 BBR3 状态
+    if [ "$ALREADY_XANMOD" = "true" ] && [ "$CURRENT_CC" = "bbr" ]; then
+        BBR3_STATUS_TEXT="${GREEN}已开启 (BBRv3 加速引擎)${PLAIN}"
+    elif [ "$CURRENT_CC" = "bbr" ]; then
+        BBR3_STATUS_TEXT="${YELLOW}已开启 (标准内核 BBRv1，建议升级 XanMod)${PLAIN}"
+    else
+        BBR3_STATUS_TEXT="${RED}未开启 (当前为: ${CURRENT_CC:-未知})${PLAIN}"
+    fi
+
+    # 判定整体优化状态与建议
+    if [ "$ALREADY_XANMOD" = "true" ] && [ "$CURRENT_CC" = "bbr" ] && [ "$CURRENT_NOTSENT" = "16384" ] && [ "$CURRENT_REUSE" = "1" ]; then
+        OPTIMIZE_STATUS_TEXT="${GREEN}已经是优化后的最佳状态${PLAIN}"
+        OPTIMIZE_ADVICE_TEXT="${GREEN}已达理论极限性能，无需重复优化！（若配置有变化，请重新优化）${PLAIN}"
+    else
+        OPTIMIZE_STATUS_TEXT="${YELLOW}尚未深度优化 (检测到未调优参数)${PLAIN}"
+        OPTIMIZE_ADVICE_TEXT="${RED}建议运行一键优化 (输入 1 并回车)${PLAIN}"
+    fi
+
     echo -e "${BLUE}==================================================${PLAIN}"
     echo -e "    Debian/Ubuntu 智能/极客网络调优 一体化部署脚本"
     echo -e "${BLUE}==================================================${PLAIN}"
     echo -e "当前系统：${GREEN}${NAME} ${VERSION_ID} (${CODENAME})${PLAIN}"
     echo -e "VPS位置 ：${GREEN}${COUNTRY_NAME}${PLAIN}"
-    echo -e "当前内核：$(if [ "$ALREADY_XANMOD" = "true" ]; then echo -e "${YELLOW}${CURRENT_KERNEL} (已是XanMod)${PLAIN}"; else echo -e "${GREEN}${CURRENT_KERNEL} (标准内核)${PLAIN}"; fi)"
+    echo -e "当前内核：$(if [ "$ALREADY_XANMOD" = "true" ]; then echo -e "${GREEN}${CURRENT_KERNEL} (已是XanMod)${PLAIN}"; else echo -e "${YELLOW}${CURRENT_KERNEL} (标准内核)${PLAIN}"; fi)"
+    echo -e "BBR3状态：${BBR3_STATUS_TEXT}"
+    echo -e "优化状态：${OPTIMIZE_STATUS_TEXT}"
+    echo -e "优化建议：${OPTIMIZE_ADVICE_TEXT}"
     echo -e "${BLUE}==================================================${PLAIN}"
     echo -e "请选择调优模式："
     echo -e "  ${GREEN}1. [小白/一键] AI 智能自适应网络调优 (🏆 强烈推荐)${PLAIN}"
     echo -e "     ${YELLOW}└─ 自动识别物理内存、自适应BDP缓冲、动态抗堵塞并发全开。${PLAIN}"
     echo -e "  ${YELLOW}2. [高手/极客] 目标节点精准手工调优 (BDP / 窗口定制)${PLAIN}"
     echo -e "     ${YELLOW}└─ 需手动输入对端测速带宽与延迟，计算绝对理论极限值。${PLAIN}"
-    echo -e "  ${BLUE}3. 🔍 验证内核与网络加速算法是否成功生效 (Status Check)${PLAIN}"
+    echo -e "  ${BLUE}3. 🔍 详细体检内核与网络加速算法生效状态 (Status Check)${PLAIN}"
     echo -e "  ${RED}0. 退出脚本${PLAIN}"
     echo -e "${BLUE}==================================================${PLAIN}"
     read -p "请输入数字 [0-3] (默认: 1): " CHOICE
@@ -246,11 +296,9 @@ elif [ "$CHOICE" -eq 2 ]; then
     read -p "2. 请输入平均网络延迟 RTT (单位: ms, 默认: 150): " TARGET_RTT
     TARGET_RTT=${TARGET_RTT:-150}
 
-    # BDP 计算: 带宽(Mbps) * 延迟(ms) * 125 = BDP 字节数。 (因为 10^6 / 8 / 10^3 = 125)
-    # 为了冗余抗丢包，给实际 BDP 乘 1.5 倍
+    # BDP 计算: 带宽(Mbps) * 延迟(ms) * 125 = BDP 字节数
     BDP_BYTES=$(( TARGET_BW * TARGET_RTT * 125 * 3 / 2 ))
     
-    # 防止数值过低
     if [ "$BDP_BYTES" -lt 4194304 ]; then BDP_BYTES=4194304; fi
 
     CONFIG_SUMMARY="BBRv3 + FQ + 精准BDP极限缓冲 ($((BDP_BYTES/1024/1024))MB, 目标:${TARGET_BW}M/${TARGET_RTT}ms)"
