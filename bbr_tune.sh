@@ -68,10 +68,64 @@ case "$COUNTRY_CODE" in
     HK|JP|KR|SG|MY|PH|TW|TH|VN|ID) COUNTRY_NAME="亚太地区 (${COUNTRY_CODE})" ;;
     US|CA) COUNTRY_NAME="北美洲 (${COUNTRY_CODE})" ;;
     GB|UK|DE|NL|FR|RU) COUNTRY_NAME="欧洲 (${COUNTRY_CODE})" ;;
+    CN) COUNTRY_NAME="中国大陆 (${COUNTRY_CODE})" ;;
     *) COUNTRY_NAME="${COUNTRY_CODE}";;
 esac
 
-# 4. 根据系统分配内核包
+# ====================================================================
+# 4. 安全拦截熔断：检测并拦截大陆机器与特定云厂商 (国内/海外全节点拦截)
+# ====================================================================
+IS_BLOCKED=false
+BLOCK_REASON=""
+
+# 规则 1: IP 地理位置处于中国大陆
+if [ "$COUNTRY_CODE" = "CN" ]; then
+    IS_BLOCKED=true
+    BLOCK_REASON="检测到当前服务器公网 IP 位于【中国大陆 (CN)】"
+fi
+
+# 规则 2: DMI / BIOS 硬件厂商特征扫描 (覆盖阿里/腾讯/华为的国内及海外全系机型)
+DMI_INFO=$(cat /sys/class/dmi/id/sys_vendor /sys/class/dmi/id/product_name /sys/class/dmi/id/bios_vendor 2>/dev/null | tr '[:upper:]' '[:lower:]')
+
+if [[ "$DMI_INFO" =~ alibaba|aliyun ]]; then
+    IS_BLOCKED=true
+    BLOCK_REASON="检测到宿主机底层为【阿里云 (Alibaba Cloud)】基础设施"
+elif [[ "$DMI_INFO" =~ tencent|qcloud ]]; then
+    IS_BLOCKED=true
+    BLOCK_REASON="检测到宿主机底层为【腾讯云 (Tencent Cloud)】基础设施"
+elif [[ "$DMI_INFO" =~ huawei ]]; then
+    IS_BLOCKED=true
+    BLOCK_REASON="检测到宿主机底层为【华为云 (Huawei Cloud)】基础设施"
+fi
+
+# 规则 3: 厂商常驻特有云盾/监控目录扫描
+if [ -d "/usr/local/aegis" ] || [ -d "/usr/local/share/aliyun-assist" ]; then
+    IS_BLOCKED=true
+    BLOCK_REASON="检测到宿主机常驻【阿里云盾 (Aegis) / 云助手】专有内核监控"
+elif [ -d "/usr/local/qcloud" ]; then
+    IS_BLOCKED=true
+    BLOCK_REASON="检测到宿主机常驻【腾讯云监控 (QCloud)】专有内核组件"
+fi
+
+# 触发拦截与退出
+if [ "$IS_BLOCKED" = "true" ]; then
+    clear
+    echo -e "${RED}================================================================${PLAIN}"
+    echo -e "${RED}⛔ [安全拦截] 触发安全熔断机制，脚本已自动终止运行！${PLAIN}"
+    echo -e "${RED}================================================================${PLAIN}"
+    echo -e "${YELLOW}拦截原因: ${RED}${BLOCK_REASON}${PLAIN}"
+    echo -e ""
+    echo -e "${YELLOW}风险技术剖析：${PLAIN}"
+    echo -e "1. 该厂商底层虚拟化（KVM）默认裁剪/屏蔽了 x86-64-v3 高级指令集，强制安装 XanMod 内核会导致开机崩溃 (Kernel Panic)。"
+    echo -e "2. 该厂商深度绑定了专有 VirtIO 虚拟网卡驱动与云盾监控，第三方高性能内核无法接管网卡，易造成 SSH 永久断联。"
+    echo -e "3. 无论是国内节点还是海外节点，该厂商均使用相同的封闭底层虚拟化，不适合刷写第三方性能内核。"
+    echo -e "${RED}================================================================${PLAIN}"
+    echo -e "${GREEN}👉 兼容推荐：建议在正规国际云厂商（如 DMIT、搬瓦工、AWS、甲骨文、Linode、Hetzner 等）上运行。${PLAIN}"
+    echo -e "${BLUE}为了保护您的服务器数据与连接安全，脚本已安全退出。${PLAIN}"
+    exit 1
+fi
+
+# 5. 根据系统分配内核包
 CODENAME=$VERSION_CODENAME
 if [ "$ID" = "debian" ] && [ "$VERSION_ID" = "12" ]; then
     KERNEL_PKG="linux-xanmod-lts-x64v3"
@@ -79,7 +133,7 @@ else
     KERNEL_PKG="linux-xanmod-x64v3"
 fi
 
-# 5. 定义通用命令重试函数
+# 6. 定义通用命令重试函数
 retry_command() {
     local max_attempts=5
     local timeout=3
@@ -96,7 +150,7 @@ retry_command() {
     return 0
 }
 
-# 6. 深度清理旧系统参数
+# 7. 深度清理旧系统参数
 clean_sysctl() {
     local params=(
         "net.core.default_qdisc" "net.ipv4.tcp_congestion_control" "net.ipv4.tcp_rmem" "net.ipv4.tcp_wmem"
@@ -110,7 +164,7 @@ clean_sysctl() {
     done
 }
 
-# 7. 写入基础深度优化参数 (双轨通用部分)
+# 8. 写入基础深度优化参数 (双轨通用部分)
 write_base_sysctl() {
     cat >> /etc/sysctl.conf << EOF
 # --- 底层并发与防排队优化 ---
@@ -136,7 +190,7 @@ net.ipv4.tcp_dsack=1
 EOF
 }
 
-# 8. 状态体检验证功能 (选项3)
+# 9. 状态体检验证功能 (选项3)
 verify_status() {
     clear
     echo -e "${BLUE}==================================================${PLAIN}"
@@ -188,7 +242,7 @@ verify_status() {
     read -p "按回车键返回主菜单..."
 }
 
-# 9. 脚本主循环交互菜单
+# 10. 脚本主循环交互菜单
 while true; do
     clear
     CURRENT_KERNEL=$(uname -r)
@@ -212,7 +266,7 @@ while true; do
         BBR3_STATUS_TEXT="${RED}未开启 (当前为: ${CURRENT_CC:-未知})${PLAIN}"
     fi
 
-    # 判定整体优化状态、建议与动态默认选项 (核心改动点)
+    # 判定整体优化状态、建议与动态默认选项
     if [ "$ALREADY_XANMOD" = "true" ] && [ "$CURRENT_CC" = "bbr" ] && [ "$CURRENT_NOTSENT" = "16384" ] && [ "$CURRENT_REUSE" = "1" ]; then
         OPTIMIZE_STATUS_TEXT="${GREEN}已经是优化后的最佳状态${PLAIN}"
         OPTIMIZE_ADVICE_TEXT="${GREEN}已达理论极限性能，无需重复优化！（若配置有变化，请重新优化）${PLAIN}"
@@ -311,7 +365,7 @@ elif [ "$CHOICE" -eq 2 ]; then
     echo "net.ipv4.tcp_wmem=4096 65536 ${BDP_BYTES}" >> /etc/sysctl.conf
 fi
 
-# 10. 开始执行源配置与更新
+# 11. 开始执行源配置与更新
 echo -e "\n${BLUE}[1/3] 开始配置 XanMod 官方存储库...${PLAIN}"
 rm -f /etc/apt/sources.list.d/xanmod-release.list
 install -d -m 0755 /etc/apt/keyrings
@@ -337,7 +391,7 @@ fi
 echo "deb [signed-by=/etc/apt/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org ${CODENAME} main" | tee /etc/apt/sources.list.d/xanmod-release.list
 retry_command apt update >/dev/null
 
-# 11. 智能版本比对
+# 12. 智能版本比对
 SKIP_KERNEL_INSTALL=false
 NEED_REBOOT=false
 
@@ -361,16 +415,16 @@ if [ "$SKIP_KERNEL_INSTALL" = "false" ]; then
     NEED_REBOOT=true
 fi
 
-# 12. 更新引导
+# 13. 更新引导
 if [ "$NEED_REBOOT" = "true" ]; then
     echo -e "\n${BLUE}[3/3] 正在强行更新 GRUB 系统引导配置...${PLAIN}"
     retry_command update-grub
 fi
 
-# 13. 应用系统优化配置
+# 14. 应用系统优化配置
 sysctl -p > /dev/null 2>&1
 
-# 14. 漂亮的执行结果输出
+# 15. 漂亮的执行结果输出
 clear
 echo -e "${GREEN}==================================================${PLAIN}"
 echo -e "          🎉 内核配置与极客网络调优执行完毕！"
@@ -380,7 +434,7 @@ echo -e "参数总览：${BLUE}${CONFIG_SUMMARY}${PLAIN}"
 echo -e "高级特性：${YELLOW}并发扩容 / TIME_WAIT回收 / PMTU探测 / TCP Fast Open${PLAIN} 已全开"
 echo -e "${GREEN}==================================================${PLAIN}"
 
-# 15. 智能倒计时重启机制
+# 16. 智能倒计时重启机制
 if [ "$NEED_REBOOT" = "true" ]; then
     echo -e "${YELLOW}新内核已安装，系统将在 7 秒后自动重启使其生效！${PLAIN}"
     for i in {7..1}; do
