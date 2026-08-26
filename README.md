@@ -1,8 +1,8 @@
-# ⚡ Debian / Ubuntu 一键安装 XanMod BBRv3 & AI 智能网络动态调优 (双轨极客版)
+# ⚡ Debian / Ubuntu 一键安装 XanMod BBRv3 & 智能网络动态调优 (双轨极客版)
 
 一款专为 **Debian 12/13** 以及 **Ubuntu 20.04/22.04/24.04/26.04 (LTS)** 深度定制的 BBRv3 一键安装与网络生命周期管理工具。
 
-本脚本摒弃了传统的“静态写死参数”与“繁琐场景选择”，全面进化为**基于物理内存的 AI 自适应计算**与**基于链路 BDP 的极客精准计算**。无论您的 VPS 是用于大并发建站还是高吞吐代理翻墙，均能榨干最后一滴网络性能。
+本脚本摒弃了传统的“静态写死参数”与“繁琐场景选择”，全面进化为**基于物理内存的自适应计算**与**基于链路 BDP 的极客精准计算**。无论您的 VPS 是用于大并发建站还是高吞吐代理翻墙，均能榨干最后一滴网络性能。
 
 ---
 
@@ -23,8 +23,8 @@
 
 ```bash
 # 请确保将下方链接替换为您实际托管脚本的 URL
-bash <(curl -fsSL https://raw.githubusercontent.com/ZhangSir9901/BBRv3-Onekey/main/bbr_ai_tune.sh)
-
+bash <(curl -fsSL https://raw.githubusercontent.com/ZhangSir9901/BBRv3-Onekey/main/bbr_tune.sh)
+```
 📊 双轨制调优模式 (化繁为简)
 
 运行脚本后，您将看到极度清爽的菜单界面，根据您的需求选择即可：
