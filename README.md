@@ -22,7 +22,6 @@
 使用 `root` 用户登录您的 Debian 或 Ubuntu 服务器，复制并运行以下命令：
 
 ```bash
-# 请确保将下方链接替换为您实际托管脚本的 URL
 bash <(curl -fsSL https://raw.githubusercontent.com/ZhangSir9901/BBRv3-Onekey/main/bbr_tune.sh)
 ```
 📊 双轨制调优模式 (化繁为简)
@@ -66,6 +65,8 @@ pdlr@qq.com
 👇 鼠标悬停在下方代码框内，点击右上角即可一键复制：
 
 TXS6K4jaomQn26QsouSkdUZPDRo8Rd63zj
+
+
 
 "Talk is cheap. Show me the code." —— 保持热爱，奔赴山海。
 
