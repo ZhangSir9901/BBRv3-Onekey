@@ -212,13 +212,15 @@ while true; do
         BBR3_STATUS_TEXT="${RED}未开启 (当前为: ${CURRENT_CC:-未知})${PLAIN}"
     fi
 
-    # 判定整体优化状态与建议
+    # 判定整体优化状态、建议与动态默认选项 (核心改动点)
     if [ "$ALREADY_XANMOD" = "true" ] && [ "$CURRENT_CC" = "bbr" ] && [ "$CURRENT_NOTSENT" = "16384" ] && [ "$CURRENT_REUSE" = "1" ]; then
         OPTIMIZE_STATUS_TEXT="${GREEN}已经是优化后的最佳状态${PLAIN}"
         OPTIMIZE_ADVICE_TEXT="${GREEN}已达理论极限性能，无需重复优化！（若配置有变化，请重新优化）${PLAIN}"
+        DEFAULT_CHOICE=0
     else
         OPTIMIZE_STATUS_TEXT="${YELLOW}尚未深度优化 (检测到未调优参数)${PLAIN}"
         OPTIMIZE_ADVICE_TEXT="${RED}建议运行一键优化 (输入 1 并回车)${PLAIN}"
+        DEFAULT_CHOICE=1
     fi
 
     echo -e "${BLUE}==================================================${PLAIN}"
@@ -239,10 +241,10 @@ while true; do
     echo -e "  ${BLUE}3. 🔍 详细体检内核与网络加速算法生效状态 (Status Check)${PLAIN}"
     echo -e "  ${RED}0. 退出脚本${PLAIN}"
     echo -e "${BLUE}==================================================${PLAIN}"
-    read -p "请输入数字 [0-3] (默认: 1): " CHOICE
+    read -p "请输入数字 [0-3] (默认: ${DEFAULT_CHOICE}): " CHOICE
 
-    # 默认选择逻辑
-    if [ -z "$CHOICE" ]; then CHOICE=1; fi
+    # 动态应用智能默认选项
+    if [ -z "$CHOICE" ]; then CHOICE=$DEFAULT_CHOICE; fi
 
     case "$CHOICE" in
         1|2)
