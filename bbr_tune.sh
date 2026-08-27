@@ -139,8 +139,8 @@ if [ "$IS_BLOCKED" = "true" ]; then
     echo -e "${YELLOW}拦截原因: ${RED}${BLOCK_REASON}${PLAIN}"
     echo -e ""
     echo -e "${YELLOW}风险技术剖析：${PLAIN}"
-    echo -e "1. 该厂商底层虚拟化（KVM）默认裁剪/屏蔽了 x86-64-v3 高级指令集，强制安装 XanMod 内核会导致开机崩溃 (Kernel Panic)。"
-    echo -e "2. 该厂商深度绑定了专有 VirtIO 虚拟网卡驱动与云盾监控，第三方高性能内核无法接管网卡，易造成 SSH 永久断联。"
+    echo -e "1. 该厂商底层虚拟化（KVM）默认裁剪/屏蔽了 x86-64-v3 高级指令集，强制安装第三方内核会导致开机崩溃 (Kernel Panic)。"
+    echo -e "2. 该厂商深度绑定了专有 VirtIO 虚拟网卡驱动与云盾监控，第三方内核无法正常接管网卡，易造成 SSH 永久断联。"
     echo -e "3. 无论是国内节点还是海外节点，该厂商均使用相同的封闭底层虚拟化，不适合刷写第三方性能内核。"
     echo -e "${RED}================================================================${PLAIN}"
     echo -e "${GREEN}👉 兼容推荐：建议在正规国际云厂商（如 DMIT、搬瓦工、AWS、甲骨文、Linode、Hetzner 等）上运行。${PLAIN}"
@@ -148,12 +148,43 @@ if [ "$IS_BLOCKED" = "true" ]; then
     exit 1
 fi
 
-# 6. 根据系统分配内核包
+# ====================================================================
+# 6. CPU 指令集智能动态探测与降级匹配 (AVX2 / x86-64-v1 ~ v3)
+# ====================================================================
+detect_cpu_tier() {
+    local ld_bin=""
+    [ -f /lib/ld-linux-x86-64.so.2 ] && ld_bin="/lib/ld-linux-x86-64.so.2"
+    [ -f /lib64/ld-linux-x86-64.so.2 ] && ld_bin="/lib64/ld-linux-x86-64.so.2"
+
+    if [ -n "$ld_bin" ]; then
+        local supported_tiers
+        supported_tiers=$($ld_bin --help 2>/dev/null | grep -E "x86-64-v[234] \(supported")
+        if echo "$supported_tiers" | grep -q "x86-64-v3"; then echo "x64v3"; return; fi
+        if echo "$supported_tiers" | grep -q "x86-64-v2"; then echo "x64v2"; return; fi
+    fi
+
+    # 兜底探测: 检查 /proc/cpuinfo 标志位
+    if grep -q -E "\bavx2\b" /proc/cpuinfo 2>/dev/null && grep -q -E "\bbmi2\b" /proc/cpuinfo 2>/dev/null; then
+        echo "x64v3"
+    elif grep -q -E "\bsse4_2\b" /proc/cpuinfo 2>/dev/null && grep -q -E "\bpopcnt\b" /proc/cpuinfo 2>/dev/null; then
+        echo "x64v2"
+    else
+        echo "x64v1"
+    fi
+}
+
+CPU_TIER=$(detect_cpu_tier)
+case "$CPU_TIER" in
+    x64v3) CPU_TIER_TEXT="x86-64-v3 (🚀 支持 AVX2/BMI2 满血指令集)" ;;
+    x64v2) CPU_TIER_TEXT="x86-64-v2 (🛡️ 无 AVX2，已智能降级兼容内核)" ;;
+    x64v1) CPU_TIER_TEXT="x86-64-v1 (⚙️ 基础通用兜底指令集)" ;;
+esac
+
 CODENAME=$VERSION_CODENAME
 if [ "$ID" = "debian" ] && [ "$VERSION_ID" = "12" ]; then
-    KERNEL_PKG="linux-xanmod-lts-x64v3"
+    KERNEL_PKG="linux-xanmod-lts-${CPU_TIER}"
 else
-    KERNEL_PKG="linux-xanmod-x64v3"
+    KERNEL_PKG="linux-xanmod-${CPU_TIER}"
 fi
 
 # 7. 定义通用命令重试函数
@@ -193,7 +224,20 @@ auto_manage_swap() {
     fi
 }
 
-# 9. 深度清理旧系统参数
+# ====================================================================
+# 9. VirtIO 核心驱动固化 (针对所有海外 KVM VPS 防断网/防丢盘)
+# ====================================================================
+solidify_virtio_drivers() {
+    if [ -f /etc/initramfs-tools/modules ]; then
+        for mod in virtio virtio_pci virtio_net virtio_blk virtio_scsi virtio_ring; do
+            if ! grep -q "^$mod" /etc/initramfs-tools/modules 2>/dev/null; then
+                echo "$mod" >> /etc/initramfs-tools/modules
+            fi
+        done
+    fi
+}
+
+# 10. 深度清理旧系统参数
 clean_sysctl() {
     local params=(
         "net.core.default_qdisc" "net.ipv4.tcp_congestion_control" "net.ipv4.tcp_rmem" "net.ipv4.tcp_wmem"
@@ -214,7 +258,7 @@ clean_sysctl() {
     done
 }
 
-# 10. 写入全栈极致底层优化 (双轨通用部分)
+# 11. 写入全栈极致底层优化 (双轨通用部分)
 write_base_sysctl() {
     # 1. 物理网卡发送队列扩容 (针对 G 口/万兆口)
     local main_iface=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -n 1)
@@ -310,7 +354,7 @@ EOF
 }
 
 # ====================================================================
-# 11. 全量清单级【状态详细体检】功能 (选项3)
+# 12. 全量清单级【状态详细体检】功能 (选项3)
 # ====================================================================
 verify_status() {
     clear
@@ -326,6 +370,8 @@ verify_status() {
     else
         echo -e "1. 【内核架构】: ${YELLOW}[ 未启用 XanMod ]${PLAIN} (当前运行: $current_k)"
     fi
+
+    echo -e "  └─ CPU 架构支持 : ${GREEN}${CPU_TIER_TEXT}${PLAIN}"
     
     local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
     local bbr_ok=false
@@ -408,7 +454,7 @@ verify_status() {
     read -p "按回车键返回主菜单..."
 }
 
-# 12. 脚本主循环交互菜单
+# 13. 脚本主循环交互菜单
 while true; do
     clear
     CURRENT_KERNEL=$(uname -r)
@@ -451,6 +497,7 @@ while true; do
     echo -e "${BLUE}==================================================${PLAIN}"
     echo -e "当前系统：${GREEN}${NAME} ${VERSION_ID} (${CODENAME})${PLAIN}"
     echo -e "VPS位置 ：${GREEN}${COUNTRY_NAME}${PLAIN}"
+    echo -e "CPU架构 ：${GREEN}${CPU_TIER_TEXT}${PLAIN}"
     echo -e "网络架构：${GREEN}${IP_STACK_TEXT}${PLAIN}"
     echo -e "内存状态：${GREEN}物理内存 ${TOTAL_RAM_SHOW}MB | Swap气囊 ${TOTAL_SWAP_SHOW}MB${PLAIN}"
     echo -e "当前内核：$(if [ "$ALREADY_XANMOD" = "true" ]; then echo -e "${GREEN}${CURRENT_KERNEL} (已是XanMod)${PLAIN}"; else echo -e "${YELLOW}${CURRENT_KERNEL} (标准内核)${PLAIN}"; fi)"
@@ -491,9 +538,10 @@ while true; do
 done
 
 # ====================================================================
-# 13. 执行优化写入流程
+# 14. 执行优化写入流程
 # ====================================================================
 auto_manage_swap
+solidify_virtio_drivers
 clean_sysctl
 write_base_sysctl
 
@@ -538,7 +586,7 @@ elif [ "$CHOICE" -eq 2 ]; then
     echo "net.ipv4.tcp_wmem=4096 65536 ${BDP_BYTES}" >> /etc/sysctl.conf
 fi
 
-# 14. 开始执行源配置与更新
+# 15. 开始执行源配置与更新
 echo -e "\n${BLUE}[1/3] 开始配置 XanMod 官方存储库...${PLAIN}"
 rm -f /etc/apt/sources.list.d/xanmod-release.list
 install -d -m 0755 /etc/apt/keyrings
@@ -564,7 +612,7 @@ fi
 echo "deb [signed-by=/etc/apt/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org ${CODENAME} main" | tee /etc/apt/sources.list.d/xanmod-release.list
 retry_command apt update >/dev/null
 
-# 15. 智能版本比对
+# 16. 智能版本比对 (精准追踪当前 CPU 架构的内核包)
 SKIP_KERNEL_INSTALL=false
 NEED_REBOOT=false
 
@@ -573,13 +621,13 @@ if dpkg -l | grep -q "${KERNEL_PKG}"; then
     LATEST_VER=$(apt-cache policy ${KERNEL_PKG} | grep "Candidate:" | awk '{print $2}')
     
     if [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
-        echo -e "\n${GREEN}[提示] XanMod 内核已是最新 (${INSTALLED_VER})，跳过重装。${PLAIN}"
+        echo -e "\n${GREEN}[提示] XanMod 内核已是对应 CPU 架构最新版 (${INSTALLED_VER})，跳过重装。${PLAIN}"
         SKIP_KERNEL_INSTALL=true
     fi
 fi
 
 if [ "$SKIP_KERNEL_INSTALL" = "false" ]; then
-    echo -e "\n${BLUE}[2/3] 正在安装/升级 XanMod 内核包 [${KERNEL_PKG}]...${PLAIN}"
+    echo -e "\n${BLUE}[2/3] 正在安装/升级 XanMod [${KERNEL_PKG}] 内核包...${PLAIN}"
     retry_command apt install ${KERNEL_PKG} -y
     if [ $? -ne 0 ]; then
         echo -e "${RED}[错误] 内核程序安装/升级失败！${PLAIN}"
@@ -588,27 +636,29 @@ if [ "$SKIP_KERNEL_INSTALL" = "false" ]; then
     NEED_REBOOT=true
 fi
 
-# 16. 更新引导
+# 17. 固化驱动镜像与更新引导
 if [ "$NEED_REBOOT" = "true" ]; then
-    echo -e "\n${BLUE}[3/3] 正在强行更新 GRUB 系统引导配置...${PLAIN}"
+    echo -e "\n${BLUE}[3/3] 正在生成完整 Initramfs 镜像并更新 GRUB 引导...${PLAIN}"
+    update-initramfs -u -k all >/dev/null 2>&1
     retry_command update-grub
 fi
 
-# 17. 应用系统优化配置
+# 18. 应用系统优化配置
 sysctl -p > /dev/null 2>&1
 
-# 18. 漂亮的执行结果输出
+# 19. 漂亮的执行结果输出
 clear
 echo -e "${GREEN}==================================================${PLAIN}"
 echo -e "          🎉 内核配置与极客全栈调优执行完毕！"
 echo -e "${GREEN}==================================================${PLAIN}"
 echo -e "使用模式：${BLUE}${SCENARIO}${PLAIN}"
+echo -e "匹配内核：${BLUE}${KERNEL_PKG}${PLAIN} (${CPU_TIER_TEXT})"
 echo -e "参数总览：${BLUE}${CONFIG_SUMMARY}${PLAIN}"
 echo -e "网络拓扑：${BLUE}${IP_STACK_TEXT}${PLAIN}"
-echo -e "高级特性：${YELLOW}UDP/QUIC扩容 / TIME_WAIT回收 / PMTU探测 / TCP Fast Open / Swap气囊${PLAIN} 已全开"
+echo -e "高级特性：${YELLOW}VirtIO驱动固化 / UDP扩容 / TIME_WAIT回收 / PMTU探测 / Swap气囊${PLAIN} 已全开"
 echo -e "${GREEN}==================================================${PLAIN}"
 
-# 19. 智能倒计时重启机制
+# 20. 智能倒计时重启机制
 if [ "$NEED_REBOOT" = "true" ]; then
     echo -e "${YELLOW}新内核已安装，系统将在 7 秒后自动重启使其生效！${PLAIN}"
     for i in {7..1}; do
