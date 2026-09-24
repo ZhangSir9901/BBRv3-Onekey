@@ -207,9 +207,17 @@ retry_command() {
 # ====================================================================
 # 8. 小内存智能“急救气囊” (Swap 自动兜底检测与创建)
 # ====================================================================
+get_ram_mb() {
+    free -m | awk '/^Mem:/{print $2}'
+}
+
+get_swap_mb() {
+    free -m | awk '/^Swap:/{print $2}'
+}
+
 auto_manage_swap() {
-    local total_ram_mb=$(free -m | awk '/^Mem:/{print $2}')
-    local current_swap_mb=$(free -m | awk '/^Swap:/{print $2}')
+    local total_ram_mb=$(get_ram_mb)
+    local current_swap_mb=$(get_swap_mb)
 
     if [ "$total_ram_mb" -le 1536 ] && [ "$current_swap_mb" -lt 512 ]; then
         echo -e "${YELLOW}[内存急救] 检测到本机物理内存较小 (${total_ram_mb}MB) 且无充足 Swap，正在自动创建 1GB 虚拟内存保命气囊...${PLAIN}"
@@ -435,7 +443,7 @@ verify_status() {
     local ip6_ra=$(sysctl -n net.ipv6.conf.all.accept_ra 2>/dev/null)
     local swappiness=$(sysctl -n vm.swappiness 2>/dev/null)
     local dirty=$(sysctl -n vm.dirty_ratio 2>/dev/null)
-    local current_swap=$(free -m | awk '/^Swap:/{print $2}')
+    local current_swap=$(get_swap_mb)
 
     echo -e "  ├─ 当前网络栈拓扑     : ${GREEN}${IP_STACK_TEXT}${PLAIN}"
     echo -e "  ├─ IPv4 路由转发      : $(if [ "$ip4_fwd" = "1" ]; then echo -e "${GREEN}已开启${PLAIN}"; else echo -e "${YELLOW}未开启${PLAIN}"; fi)"
@@ -463,8 +471,8 @@ while true; do
         ALREADY_XANMOD=true
     fi
 
-    TOTAL_RAM_SHOW=$(free -m | awk '/^Mem:/{print $2}')
-    TOTAL_SWAP_SHOW=$(free -m | awk '/^Swap:/{print $2}')
+    TOTAL_RAM_SHOW=$(get_ram_mb)
+    TOTAL_SWAP_SHOW=$(get_swap_mb)
 
     # 动态检测当前运行状态
     CURRENT_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
@@ -549,7 +557,7 @@ if [ "$CHOICE" -eq 1 ]; then
     SCENARIO="[小白模式] 智能自适应全局调优"
     
     # 动态内存计算 (防 OOM 并最大化吞吐)
-    TOTAL_MEM_MB=$(free -m | awk '/^Mem:/{print $2}')
+    TOTAL_MEM_MB=$(get_ram_mb)
     MAX_MEM_BYTES=$((TOTAL_MEM_MB * 1024 * 1024 * 15 / 1000))
     if [ "$MAX_MEM_BYTES" -lt 4194304 ]; then MAX_MEM_BYTES=4194304; fi
     if [ "$MAX_MEM_BYTES" -gt 67108864 ]; then MAX_MEM_BYTES=67108864; fi
