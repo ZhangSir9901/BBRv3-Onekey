@@ -253,9 +253,13 @@ clean_sysctl() {
         "net.netfilter.nf_conntrack_max" "net.netfilter.nf_conntrack_tcp_timeout_established"
         "net.netfilter.nf_conntrack_tcp_timeout_close_wait" "net.netfilter.nf_conntrack_tcp_timeout_time_wait"
     )
+    local sed_expr=""
     for p in "${params[@]}"; do
-        sed -i "/^${p}/d" /etc/sysctl.conf
+        sed_expr+="/^${p}/d;"
     done
+    if [ -n "$sed_expr" ]; then
+        sed -i "$sed_expr" /etc/sysctl.conf
+    fi
 }
 
 # 11. 写入全栈极致底层优化 (双轨通用部分)
