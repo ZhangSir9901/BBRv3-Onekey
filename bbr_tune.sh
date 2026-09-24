@@ -12,60 +12,71 @@ YELLOW='\033[1;33m' # 高亮黄
 BLUE='\033[36m'
 PLAIN='\033[0m'
 
+# === Main execution guard for testing ===
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  EXECUTE_MAIN=true
+else
+  EXECUTE_MAIN=false
+fi
+
 # 1. 权限与系统检查
-if [ "$EUID" -ne 0 ]; then
+if [ "$EXECUTE_MAIN" = "true" ] && [ "$EUID" -ne 0 ]; then
     echo -e "${RED}[错误] 必须使用 root 权限运行此脚本！${PLAIN}"
     exit 1
 fi
 
-if [ ! -f /etc/os-release ]; then
-    echo -e "${RED}[错误] 无法识别当前系统架构！${PLAIN}"
-    exit 1
+if [ "$EXECUTE_MAIN" = "true" ]; then
+    if [ ! -f /etc/os-release ]; then
+        echo -e "${RED}[错误] 无法识别当前系统架构！${PLAIN}"
+        exit 1
+    fi
+
+    . /etc/os-release
+
+    # 限制支持 Debian 12/13 和 Ubuntu LTS 版本
+    SUPPORTED=false
+    if [ "$ID" = "debian" ] && { [ "$VERSION_ID" = "12" ] || [ "$VERSION_ID" = "13" ]; }; then
+        SUPPORTED=true
+    elif [ "$ID" = "ubuntu" ] && { [ "$VERSION_ID" = "20.04" ] || [ "$VERSION_ID" = "22.04" ] || [ "$VERSION_ID" = "24.04" ] || [ "$VERSION_ID" = "26.04" ]; }; then
+        SUPPORTED=true
+    fi
+
+    if [ "$SUPPORTED" = "false" ]; then
+        echo -e "${RED}[错误] 本脚本仅支持 Debian 12/13 以及 Ubuntu LTS (20.04/22.04/24.04/26.04)！${PLAIN}"
+        echo -e "${YELLOW}当前系统为: ${ID} ${VERSION_ID:-未知版本}${PLAIN}"
+        exit 1
+    fi
+
+    # 2. 预检并安装基础依赖
+    if ! command -v gpg >/dev/null || ! command -v wget >/dev/null || ! command -v curl >/dev/null || [ ! -d /etc/ssl/certs ]; then
+        echo -e "${BLUE}正在检查并安装系统必要依赖程序...${PLAIN}"
+        apt update && apt install wget curl gnupg lsb-release ca-certificates -y
+    fi
 fi
 
-. /etc/os-release
+if [ "$EXECUTE_MAIN" = "true" ]; then
+    # ====================================================================
+    # 3. 智能检测三种 IP 网络栈架构 (双栈 / 纯v4 / 纯v6)
+    # ====================================================================
+    HAS_IPV4=false
+    HAS_IPV6=false
 
-# 限制支持 Debian 12/13 和 Ubuntu LTS 版本
-SUPPORTED=false
-if [ "$ID" = "debian" ] && { [ "$VERSION_ID" = "12" ] || [ "$VERSION_ID" = "13" ]; }; then
-    SUPPORTED=true
-elif [ "$ID" = "ubuntu" ] && { [ "$VERSION_ID" = "20.04" ] || [ "$VERSION_ID" = "22.04" ] || [ "$VERSION_ID" = "24.04" ] || [ "$VERSION_ID" = "26.04" ]; }; then
-    SUPPORTED=true
-fi
+    if curl -s -4 --connect-timeout 2 https://www.cloudflare.com/cdn-cgi/trace >/dev/null 2>&1 || curl -s -4 --connect-timeout 2 https://api.ipify.org >/dev/null 2>&1; then
+        HAS_IPV4=true
+    fi
+    if curl -s -6 --connect-timeout 2 https://www.cloudflare.com/cdn-cgi/trace >/dev/null 2>&1 || curl -s -6 --connect-timeout 2 https://api6.ipify.org >/dev/null 2>&1; then
+        HAS_IPV6=true
+    fi
 
-if [ "$SUPPORTED" = "false" ]; then
-    echo -e "${RED}[错误] 本脚本仅支持 Debian 12/13 以及 Ubuntu LTS (20.04/22.04/24.04/26.04)！${PLAIN}"
-    echo -e "${YELLOW}当前系统为: ${ID} ${VERSION_ID:-未知版本}${PLAIN}"
-    exit 1
-fi
-
-# 2. 预检并安装基础依赖
-if ! command -v gpg >/dev/null || ! command -v wget >/dev/null || ! command -v curl >/dev/null || [ ! -d /etc/ssl/certs ]; then
-    echo -e "${BLUE}正在检查并安装系统必要依赖程序...${PLAIN}"
-    apt update && apt install wget curl gnupg lsb-release ca-certificates -y
-fi
-
-# ====================================================================
-# 3. 智能检测三种 IP 网络栈架构 (双栈 / 纯v4 / 纯v6)
-# ====================================================================
-HAS_IPV4=false
-HAS_IPV6=false
-
-if curl -s -4 --connect-timeout 2 https://www.cloudflare.com/cdn-cgi/trace >/dev/null 2>&1 || curl -s -4 --connect-timeout 2 https://api.ipify.org >/dev/null 2>&1; then
-    HAS_IPV4=true
-fi
-if curl -s -6 --connect-timeout 2 https://www.cloudflare.com/cdn-cgi/trace >/dev/null 2>&1 || curl -s -6 --connect-timeout 2 https://api6.ipify.org >/dev/null 2>&1; then
-    HAS_IPV6=true
-fi
-
-if [ "$HAS_IPV4" = "true" ] && [ "$HAS_IPV6" = "true" ]; then
-    IP_STACK_TEXT="双栈网络 (IPv4 + IPv6)"
-elif [ "$HAS_IPV4" = "true" ]; then
-    IP_STACK_TEXT="纯 IPv4 网络 (IPv4-Only)"
-elif [ "$HAS_IPV6" = "true" ]; then
-    IP_STACK_TEXT="纯 IPv6 网络 (IPv6-Only)"
-else
-    IP_STACK_TEXT="单网卡未知拓扑"
+    if [ "$HAS_IPV4" = "true" ] && [ "$HAS_IPV6" = "true" ]; then
+        IP_STACK_TEXT="双栈网络 (IPv4 + IPv6)"
+    elif [ "$HAS_IPV4" = "true" ]; then
+        IP_STACK_TEXT="纯 IPv4 网络 (IPv4-Only)"
+    elif [ "$HAS_IPV6" = "true" ]; then
+        IP_STACK_TEXT="纯 IPv6 网络 (IPv6-Only)"
+    else
+        IP_STACK_TEXT="单网卡未知拓扑"
+    fi
 fi
 
 # 4. 高精度地理位置识别 (适配纯 IPv6 探测)
@@ -455,6 +466,7 @@ verify_status() {
 }
 
 # 13. 脚本主循环交互菜单
+if [ "$EXECUTE_MAIN" = "true" ]; then
 while true; do
     clear
     CURRENT_KERNEL=$(uname -r)
@@ -536,10 +548,12 @@ while true; do
         *) echo -e "${RED}[错误] 输入无效，请重新选择！${PLAIN}"; sleep 1 ;;
     esac
 done
+fi # End of Main execution guard loop
 
 # ====================================================================
 # 14. 执行优化写入流程
 # ====================================================================
+if [ "$EXECUTE_MAIN" = "true" ]; then
 auto_manage_swap
 solidify_virtio_drivers
 clean_sysctl
@@ -672,3 +686,4 @@ else
     echo -e "您可立即再次运行本脚本选择 [3] 查看全量参数体检清单。${PLAIN}"
     echo -e "${GREEN}==================================================${PLAIN}"
 fi
+fi # End of execution guard block
