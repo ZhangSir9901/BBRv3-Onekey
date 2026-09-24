@@ -468,7 +468,6 @@ while true; do
 
     # 动态检测当前运行状态
     CURRENT_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-    CURRENT_QDISC=$(sysctl -n net.core.default_qdisc 2>/dev/null)
     CURRENT_NOTSENT=$(sysctl -n net.ipv4.tcp_notsent_lowat 2>/dev/null)
     CURRENT_REUSE=$(sysctl -n net.ipv4.tcp_tw_reuse 2>/dev/null)
 
