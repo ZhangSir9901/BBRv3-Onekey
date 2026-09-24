@@ -618,7 +618,7 @@ NEED_REBOOT=false
 
 if dpkg -l | grep -q "${KERNEL_PKG}"; then
     INSTALLED_VER=$(dpkg-query -W -f='${Version}' ${KERNEL_PKG} 2>/dev/null)
-    LATEST_VER=$(apt-cache policy ${KERNEL_PKG} | grep "Candidate:" | awk '{print $2}')
+    LATEST_VER=$(apt-cache madison ${KERNEL_PKG} | head -n 1 | awk '{print $3}')
     
     if [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
         echo -e "\n${GREEN}[提示] XanMod 内核已是对应 CPU 架构最新版 (${INSTALLED_VER})，跳过重装。${PLAIN}"
