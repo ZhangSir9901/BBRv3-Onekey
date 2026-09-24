@@ -569,9 +569,17 @@ elif [ "$CHOICE" -eq 2 ]; then
     
     read -p "1. 请输入实测最高带宽 (单位: Mbps, 默认: 1000): " TARGET_BW
     TARGET_BW=${TARGET_BW:-1000}
+    if ! [[ "$TARGET_BW" =~ ^[0-9]+$ ]]; then
+        echo -e "${YELLOW}[警告] 无效的带宽输入，已重置为默认值 1000 Mbps。${PLAIN}"
+        TARGET_BW=1000
+    fi
     
     read -p "2. 请输入平均网络延迟 RTT (单位: ms, 默认: 150): " TARGET_RTT
     TARGET_RTT=${TARGET_RTT:-150}
+    if ! [[ "$TARGET_RTT" =~ ^[0-9]+$ ]]; then
+        echo -e "${YELLOW}[警告] 无效的延迟输入，已重置为默认值 150 ms。${PLAIN}"
+        TARGET_RTT=150
+    fi
 
     # BDP 计算: 带宽(Mbps) * 延迟(ms) * 125 = BDP 字节数
     BDP_BYTES=$(( TARGET_BW * TARGET_RTT * 125 * 3 / 2 ))
