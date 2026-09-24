@@ -12,6 +12,8 @@ YELLOW='\033[1;33m' # 高亮黄
 BLUE='\033[36m'
 PLAIN='\033[0m'
 
+SYSCTL_CONF="${SYSCTL_CONF:-/etc/sysctl.conf}"
+
 # 1. 权限与系统检查
 if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}[错误] 必须使用 root 权限运行此脚本！${PLAIN}"
@@ -254,7 +256,7 @@ clean_sysctl() {
         "net.netfilter.nf_conntrack_tcp_timeout_close_wait" "net.netfilter.nf_conntrack_tcp_timeout_time_wait"
     )
     for p in "${params[@]}"; do
-        sed -i "/^${p}/d" /etc/sysctl.conf
+        sed -i "/^${p}/d" "$SYSCTL_CONF"
     done
 }
 
@@ -282,7 +284,7 @@ EOF
     echo "DefaultLimitNOFILE=1048576" >> /etc/systemd/user.conf
 
     # 3. 写入基础全栈优化参数
-    cat >> /etc/sysctl.conf << EOF
+    cat >> "$SYSCTL_CONF" << EOF
 # --- 系统级并发与 Xray/代理零拷贝管道 ---
 fs.file-max=1048576
 fs.inotify.max_user_watches=524288
@@ -327,13 +329,13 @@ EOF
 
     # 4. 针对 IPv4 / 双栈网络
     if [ "$HAS_IPV4" = "true" ]; then
-        echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-        echo "net.ipv4.ip_local_port_range=1024 65535" >> /etc/sysctl.conf
+        echo "net.ipv4.ip_forward=1" >> "$SYSCTL_CONF"
+        echo "net.ipv4.ip_local_port_range=1024 65535" >> "$SYSCTL_CONF"
     fi
 
     # 5. 针对 IPv6 / 双栈网络 (注入断网守护)
     if [ "$HAS_IPV6" = "true" ]; then
-        cat >> /etc/sysctl.conf << EOF
+        cat >> "$SYSCTL_CONF" << EOF
 net.ipv6.conf.all.forwarding=1
 net.ipv6.conf.default.forwarding=1
 net.ipv6.conf.all.accept_ra=2
@@ -344,7 +346,7 @@ EOF
 
     # 6. 针对 Netfilter Conntrack 动态支持
     if lsmod 2>/dev/null | grep -q conntrack || [ -f /proc/sys/net/netfilter/nf_conntrack_max ]; then
-        cat >> /etc/sysctl.conf << EOF
+        cat >> "$SYSCTL_CONF" << EOF
 net.netfilter.nf_conntrack_max=1048576
 net.netfilter.nf_conntrack_tcp_timeout_established=1200
 net.netfilter.nf_conntrack_tcp_timeout_close_wait=15
@@ -556,10 +558,10 @@ if [ "$CHOICE" -eq 1 ]; then
 
     CONFIG_SUMMARY="BBRv3 + FQ + 动态内存计算 TCP 缓冲 ($((MAX_MEM_BYTES/1024/1024))MB)"
     
-    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_rmem=4096 87380 ${MAX_MEM_BYTES}" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_wmem=4096 65536 ${MAX_MEM_BYTES}" >> /etc/sysctl.conf
+    echo "net.core.default_qdisc=fq" >> "$SYSCTL_CONF"
+    echo "net.ipv4.tcp_congestion_control=bbr" >> "$SYSCTL_CONF"
+    echo "net.ipv4.tcp_rmem=4096 87380 ${MAX_MEM_BYTES}" >> "$SYSCTL_CONF"
+    echo "net.ipv4.tcp_wmem=4096 65536 ${MAX_MEM_BYTES}" >> "$SYSCTL_CONF"
 
 elif [ "$CHOICE" -eq 2 ]; then
     SCENARIO="[极客模式] 针对性链路 BDP 定制调优"
@@ -580,10 +582,10 @@ elif [ "$CHOICE" -eq 2 ]; then
 
     CONFIG_SUMMARY="BBRv3 + FQ + 精准BDP极限缓冲 ($((BDP_BYTES/1024/1024))MB, 目标:${TARGET_BW}M/${TARGET_RTT}ms)"
     
-    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_rmem=4096 87380 ${BDP_BYTES}" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_wmem=4096 65536 ${BDP_BYTES}" >> /etc/sysctl.conf
+    echo "net.core.default_qdisc=fq" >> "$SYSCTL_CONF"
+    echo "net.ipv4.tcp_congestion_control=bbr" >> "$SYSCTL_CONF"
+    echo "net.ipv4.tcp_rmem=4096 87380 ${BDP_BYTES}" >> "$SYSCTL_CONF"
+    echo "net.ipv4.tcp_wmem=4096 65536 ${BDP_BYTES}" >> "$SYSCTL_CONF"
 fi
 
 # 15. 开始执行源配置与更新
