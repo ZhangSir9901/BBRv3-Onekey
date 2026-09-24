@@ -549,8 +549,7 @@ if [ "$CHOICE" -eq 1 ]; then
     SCENARIO="[小白模式] 智能自适应全局调优"
     
     # 动态内存计算 (防 OOM 并最大化吞吐)
-    TOTAL_MEM_MB=$(free -m | awk '/^Mem:/{print $2}')
-    MAX_MEM_BYTES=$((TOTAL_MEM_MB * 1024 * 1024 * 15 / 1000))
+    MAX_MEM_BYTES=$((TOTAL_RAM_SHOW * 1024 * 1024 * 15 / 1000))
     if [ "$MAX_MEM_BYTES" -lt 4194304 ]; then MAX_MEM_BYTES=4194304; fi
     if [ "$MAX_MEM_BYTES" -gt 67108864 ]; then MAX_MEM_BYTES=67108864; fi
 
