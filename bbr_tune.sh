@@ -228,10 +228,11 @@ auto_manage_swap() {
 # 9. VirtIO 核心驱动固化 (针对所有海外 KVM VPS 防断网/防丢盘)
 # ====================================================================
 solidify_virtio_drivers() {
-    if [ -f /etc/initramfs-tools/modules ]; then
+    local modules_file="${INITRAMFS_MODULES_FILE:-/etc/initramfs-tools/modules}"
+    if [ -f "$modules_file" ]; then
         for mod in virtio virtio_pci virtio_net virtio_blk virtio_scsi virtio_ring; do
-            if ! grep -q "^$mod" /etc/initramfs-tools/modules 2>/dev/null; then
-                echo "$mod" >> /etc/initramfs-tools/modules
+            if ! grep -q "^$mod" "$modules_file" 2>/dev/null; then
+                echo "$mod" >> "$modules_file"
             fi
         done
     fi
