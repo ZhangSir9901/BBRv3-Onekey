@@ -1,4 +1,5 @@
 #!/bin/bash # 核心作用：Debian/Ubuntu 一键安装 XanMod BBRv3 与全栈网络极致性能动态调优生命周期管理
+# SCRIPT_VERSION="2.2.0"
 
 # ====================================================================
 # 项目名称: Debian/Ubuntu XanMod BBRv3 智能网络生命周期管理 (全栈极致版)
@@ -336,8 +337,10 @@ clean_sysctl() {
     fi
 }
 
-# 11. 写入全栈极致底层优化 (双轨通用部分)
+# 11. 写入全栈底层优化 (依据模式定制参数)
 write_base_sysctl() {
+    local mode=$1
+
     # 1. 物理网卡发送队列扩容 (针对 G 口/万兆口)
     local main_iface=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -n 1)
     if [ -n "$main_iface" ]; then
@@ -359,31 +362,58 @@ EOF
     echo "DefaultLimitNOFILE=1048576" >> /etc/systemd/system.conf
     echo "DefaultLimitNOFILE=1048576" >> /etc/systemd/user.conf
 
+    # 差异化配置参数 (模式 1: 综合稳健 | 模式 2: 纯代理极致 | 模式 3: 极客手工)
+    local pipe_size=524288
+    local udp_max=33554432
+    local q_somaxconn=4096
+    local q_backlog=8192
+    local q_syn_backlog=4096
+    local fin_to=20
+    local keepalive_t=600
+
+    if [ "$mode" -eq 2 ]; then
+        pipe_size=1048576
+        udp_max=67108864
+        q_somaxconn=16384
+        q_backlog=32768
+        q_syn_backlog=16384
+        fin_to=10
+        keepalive_t=300
+    elif [ "$mode" -eq 3 ]; then
+        pipe_size=1048576
+        udp_max=67108864
+        q_somaxconn=8192
+        q_backlog=16384
+        q_syn_backlog=8192
+        fin_to=15
+        keepalive_t=600
+    fi
+
     # 3. 写入基础全栈优化参数
     cat >> /etc/sysctl.conf << EOF
 # --- 系统级并发与 Xray/代理零拷贝管道 ---
 fs.file-max=1048576
 fs.inotify.max_user_watches=524288
 fs.inotify.max_user_instances=8192
-fs.pipe-max-size=1048576
+fs.pipe-max-size=${pipe_size}
 
-# --- UDP / QUIC (Hysteria2/TUIC/HTTP3) 极限缓冲 ---
-net.core.rmem_max=67108864
-net.core.wmem_max=67108864
+# --- UDP / QUIC (Hysteria2/TUIC/HTTP3) 缓冲配置 ---
+net.core.rmem_max=${udp_max}
+net.core.wmem_max=${udp_max}
 net.core.rmem_default=262144
 net.core.wmem_default=262144
 net.ipv4.udp_rmem_min=8192
 net.ipv4.udp_wmem_min=8192
 
 # --- 并发连接队列扩容 ---
-net.core.somaxconn=8192
-net.core.netdev_max_backlog=16384
-net.ipv4.tcp_max_syn_backlog=8192
+net.core.somaxconn=${q_somaxconn}
+net.core.netdev_max_backlog=${q_backlog}
+net.ipv4.tcp_max_syn_backlog=${q_syn_backlog}
 
 # --- TCP 状态机极速回收与保活 ---
 net.ipv4.tcp_tw_reuse=1
-net.ipv4.tcp_fin_timeout=15
-net.ipv4.tcp_keepalive_time=600
+net.ipv4.tcp_fin_timeout=${fin_to}
+net.ipv4.tcp_keepalive_time=${keepalive_t}
 net.ipv4.tcp_keepalive_intvl=30
 net.ipv4.tcp_keepalive_probes=5
 net.ipv4.tcp_fastopen=3
@@ -432,7 +462,97 @@ EOF
 }
 
 # ====================================================================
-# 12. 全量清单级【状态详细体检】功能 (选项3)
+# 12. 一键检查与在线升级 (选项4: 脚本 & XanMod 内核)
+# ====================================================================
+check_and_upgrade() {
+    clear
+    echo -e "${BLUE}==================================================================${PLAIN}"
+    echo -e "       🔄 一键检查与在线升级 (调优脚本 & XanMod 内核)              "
+    echo -e "${BLUE}==================================================================${PLAIN}"
+
+    # 1. 检查调优脚本云端更新
+    echo -e "\n${YELLOW}[1/2] 正在检索 GitHub 官方仓库调优脚本版本...${PLAIN}"
+    local remote_ver=$(curl -fsSL --connect-timeout 4 https://raw.githubusercontent.com/ZhangSir9901/BBRv3-Onekey/main/bbr_tune.sh 2>/dev/null | grep -m1 '^# SCRIPT_VERSION=' | cut -d= -f2 | tr -d '"\r\n ')
+    
+    local need_upgrade_script=false
+    if [ -n "$remote_ver" ] && [ "$remote_ver" != "$SCRIPT_VERSION" ]; then
+        echo -e "${GREEN}🚀 检测到调优脚本新版本: v${remote_ver}${PLAIN} (当前运行版本: v${SCRIPT_VERSION})"
+        need_upgrade_script=true
+    else
+        echo -e "${GREEN}✅ 当前调优脚本已是最新版 (v${SCRIPT_VERSION})${PLAIN}"
+    fi
+
+    if [ "$need_upgrade_script" = "true" ]; then
+        read -p "是否立即升级调优脚本至最新版？[Y:升级 / N:跳过, 默认Y]: " UP_SCRIPT_CHOICE
+        UP_SCRIPT_CHOICE=${UP_SCRIPT_CHOICE:-Y}
+        UP_SCRIPT_CHOICE=$(echo "$UP_SCRIPT_CHOICE" | tr '[:lower:]' '[:upper:]')
+        if [ "$UP_SCRIPT_CHOICE" = "Y" ]; then
+            echo -e "${BLUE}正在下载最新脚本并执行热重载...${PLAIN}"
+            local script_path="/tmp/bbr_tune_latest.sh"
+            if curl -fsSL --connect-timeout 8 https://raw.githubusercontent.com/ZhangSir9901/BBRv3-Onekey/main/bbr_tune.sh -o "$script_path"; then
+                chmod +x "$script_path"
+                if [ -f "$0" ] && [[ "$0" != "/dev/fd/"* ]]; then
+                    cp -f "$script_path" "$0"
+                fi
+                echo -e "${GREEN}✅ 脚本升级成功，正在重启进入新版...${PLAIN}"
+                sleep 1
+                exec bash "$script_path" "$@"
+            else
+                echo -e "${RED}[错误] 新版脚本下载失败，请检查网络连接！${PLAIN}"
+            fi
+        fi
+    fi
+
+    # 2. 检查 XanMod 内核更新
+    echo -e "\n${YELLOW}[2/2] 正在检索 XanMod 官方仓库内核更新...${PLAIN}"
+    local current_k=$(uname -r)
+    if [[ "$current_k" != *"xanmod"* ]]; then
+        echo -e "${YELLOW}⚠️ 当前系统正在运行标准发行版内核 (${current_k})，未安装 XanMod 内核！${PLAIN}"
+        echo -e "${BLUE}💡 提示：内核升级功能仅面向已部署 XanMod 的系统。${PLAIN}"
+        echo -e "   若需将系统升级为 XanMod BBRv3，请返回主菜单选择 [1]、[2] 或 [3] 进行一键安装。"
+    else
+        echo -e "${BLUE}正在同步 XanMod 软件源缓存...${PLAIN}"
+        dpkg --configure -a >/dev/null 2>&1
+        DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1
+        
+        local installed_k_ver=$(dpkg-query -W -f='${Version}' ${KERNEL_PKG} 2>/dev/null)
+        local latest_k_ver=$(apt-cache madison ${KERNEL_PKG} 2>/dev/null | head -n 1 | awk '{print $3}')
+        [ -z "$latest_k_ver" ] && latest_k_ver=$(LC_ALL=C apt-cache policy ${KERNEL_PKG} 2>/dev/null | grep "Candidate:" | awk '{print $2}')
+
+        if [ -n "$latest_k_ver" ] && [ -n "$installed_k_ver" ] && [ "$installed_k_ver" != "$latest_k_ver" ]; then
+            echo -e "${GREEN}🚀 检测到 XanMod [${KERNEL_PKG}] 新版本内核发布: ${latest_k_ver}${PLAIN}"
+            echo -e "   (当前安装版本: ${installed_k_ver})"
+            read -p "是否立即升级内核并更新引导镜像？[Y:升级 / N:跳过, 默认Y]: " UP_K_CHOICE
+            UP_K_CHOICE=${UP_K_CHOICE:-Y}
+            UP_K_CHOICE=$(echo "$UP_K_CHOICE" | tr '[:lower:]' '[:upper:]')
+            if [ "$UP_K_CHOICE" = "Y" ]; then
+                echo -e "\n${BLUE}正在安装 XanMod [${KERNEL_PKG}] 新内核...${PLAIN}"
+                dpkg --configure -a >/dev/null 2>&1
+                DEBIAN_FRONTEND=noninteractive retry_command apt install ${KERNEL_PKG} -y
+                echo -e "\n${BLUE}正在重新生成完整 Initramfs 镜像并更新 GRUB 引导...${PLAIN}"
+                solidify_virtio_drivers
+                update-initramfs -u -k all >/dev/null 2>&1
+                retry_command update-grub
+                echo -e "\n${GREEN}🎉 XanMod 内核升级完成！${PLAIN}"
+                read -p "是否立即重启服务器使新内核生效？[Y:重启 / N:稍后, 默认Y]: " REBOOT_NOW
+                REBOOT_NOW=${REBOOT_NOW:-Y}
+                REBOOT_NOW=$(echo "$REBOOT_NOW" | tr '[:lower:]' '[:upper:]')
+                if [ "$REBOOT_NOW" = "Y" ]; then
+                    echo -e "${GREEN}正在重启服务器...${PLAIN}"
+                    reboot
+                fi
+            fi
+        else
+            echo -e "${GREEN}✅ 当前运行的 XanMod [${KERNEL_PKG}] 已是官方最新版本 (${installed_k_ver:-$current_k})，无需重复升级！${PLAIN}"
+        fi
+    fi
+
+    echo -e "${BLUE}==================================================================${PLAIN}"
+    read -p "按回车键返回主菜单..."
+}
+
+# ====================================================================
+# 13. 全量清单级【状态详细体检】功能 (选项9)
 # ====================================================================
 verify_status() {
     clear
@@ -488,7 +608,7 @@ verify_status() {
     echo -e "${YELLOW}【UDP / QUIC / Hysteria 2 / TUIC 加速层】${PLAIN}"
     local rmem_max=$(sysctl -n net.core.rmem_max 2>/dev/null)
     local wmem_max=$(sysctl -n net.core.wmem_max 2>/dev/null)
-    echo -e "  ├─ 网卡最大接收/发送缓冲: ${GREEN}$((rmem_max/1024/1024))MB${PLAIN} / ${GREEN}$((wmem_max/1024/1024))MB${PLAIN} (突破默认212KB限制)"
+    echo -e "  ├─ 网卡最大接收/发送缓冲: ${GREEN}$((rmem_max/1024/1024))MB${PLAIN} / ${GREEN}$((wmem_max/1024/1024))MB${PLAIN}"
     echo -e "  └─ UDP 最小保证读写缓冲 : ${GREEN}$(sysctl -n net.ipv4.udp_rmem_min 2>/dev/null)B${PLAIN} / ${GREEN}$(sysctl -n net.ipv4.udp_wmem_min 2>/dev/null)B${PLAIN}"
 
     echo -e "${BLUE}------------------------------------------------------------------${PLAIN}"
@@ -501,7 +621,7 @@ verify_status() {
     local pipe_size=$(sysctl -n fs.pipe-max-size 2>/dev/null)
 
     echo -e "  ├─ TIME_WAIT 极速复用 : $(if [ "$tw_reuse" = "1" ]; then echo -e "${GREEN}已开启 (防端口耗尽)${PLAIN}"; else echo -e "${YELLOW}${tw_reuse:-默认}${PLAIN}"; fi)"
-    echo -e "  ├─ FIN 废弃连接超时   : ${GREEN}${fin_time}秒${PLAIN} (极速回收)"
+    echo -e "  ├─ FIN 废弃连接超时   : ${GREEN}${fin_time}秒${PLAIN}"
     echo -e "  ├─ 出站可用端口池范围 : ${GREEN}${port_range}${PLAIN} (扩容至6.4万端口)"
     echo -e "  ├─ 监听队列 / 网卡队列: ${GREEN}${somaxconn}${PLAIN} / ${GREEN}$(sysctl -n net.core.netdev_max_backlog 2>/dev/null)${PLAIN}"
     echo -e "  ├─ 系统最大文件句柄   : ${GREEN}${file_max}${PLAIN} (突破100万并发)"
@@ -526,13 +646,13 @@ verify_status() {
     if [ "$kernel_ok" = "true" ] && [ "$bbr_ok" = "true" ] && [ "$notsent" = "16384" ] && [ "$tw_reuse" = "1" ]; then
         echo -e "${GREEN}🎉 综合评估：服务器已处于【全栈极致优化状态】，各项硬件与网络性能已拉满！${PLAIN}"
     else
-        echo -e "${YELLOW}⚠️ 综合评估：系统尚未完全调优，建议在主菜单选择 [1] 执行一键全栈自适应优化。${PLAIN}"
+        echo -e "${YELLOW}⚠️ 综合评估：系统尚未完全调优，建议在主菜单选择相应模式执行一键调优。${PLAIN}"
     fi
     echo -e "${BLUE}==================================================================${PLAIN}"
     read -p "按回车键返回主菜单..."
 }
 
-# 13. 脚本主循环交互菜单
+# 14. 脚本主循环交互菜单
 while true; do
     clear
     CURRENT_KERNEL=$(uname -r)
@@ -546,7 +666,6 @@ while true; do
 
     # 动态检测当前运行状态
     CURRENT_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-    CURRENT_QDISC=$(sysctl -n net.core.default_qdisc 2>/dev/null)
     CURRENT_NOTSENT=$(sysctl -n net.ipv4.tcp_notsent_lowat 2>/dev/null)
     CURRENT_REUSE=$(sysctl -n net.ipv4.tcp_tw_reuse 2>/dev/null)
 
@@ -566,12 +685,12 @@ while true; do
         DEFAULT_CHOICE=0
     else
         OPTIMIZE_STATUS_TEXT="${YELLOW}尚未深度优化 (检测到未调优参数)${PLAIN}"
-        OPTIMIZE_ADVICE_TEXT="${RED}建议运行一键优化 (输入 1 并回车)${PLAIN}"
+        OPTIMIZE_ADVICE_TEXT="${RED}建议运行一键优化 (输入 1 或 2 并回车)${PLAIN}"
         DEFAULT_CHOICE=1
     fi
 
     echo -e "${BLUE}==================================================${PLAIN}"
-    echo -e "    Debian/Ubuntu 智能/极客网络调优 一体化部署脚本"
+    echo -e "    Debian/Ubuntu 智能网络全栈调优 一体化部署工具"
     echo -e "${BLUE}==================================================${PLAIN}"
     echo -e "当前系统：${GREEN}${NAME} ${VERSION_ID} (${CODENAME})${PLAIN}"
     echo -e "VPS位置 ：${GREEN}${COUNTRY_NAME}${PLAIN}"
@@ -584,55 +703,61 @@ while true; do
     echo -e "优化建议：${OPTIMIZE_ADVICE_TEXT}"
     echo -e "${BLUE}==================================================${PLAIN}"
     echo -e "请选择调优模式："
-    echo -e "  ${GREEN}1. [小白/一键] AI 智能自适应全栈调优 (🏆 强烈推荐)${PLAIN}"
-    echo -e "     ${YELLOW}└─ 自动识别物理内存/Swap、自适应BDP缓冲、动态抗堵塞并发全开。${PLAIN}"
-    echo -e "  ${YELLOW}2. [高手/极客] 目标节点精准手工调优 (BDP / 窗口定制)${PLAIN}"
+    echo -e "  ${GREEN}1. [小白/一键] 综合环境稳健全栈调优 (🏆 适合建站+代理)${PLAIN}"
+    echo -e "     ${YELLOW}└─ 针对建站/Docker/代理多业务共存，均衡内存防OOM，抗丢包防卡死。${PLAIN}"
+    echo -e "  ${GREEN}2. [新机/开荒] 纯代理极致加速全栈调优 (🚀 适合翻墙专机)${PLAIN}"
+    echo -e "     ${YELLOW}└─ 专为翻墙/专线/中转机打造，UDP/QUIC极限扩容64M，榨干单兵网络极限。${PLAIN}"
+    echo -e "  ${YELLOW}3. [高手/极客] 目标节点精准手工调优 (BDP / 窗口定制)${PLAIN}"
     echo -e "     ${YELLOW}└─ 需手动输入对端测速带宽与延迟，计算绝对理论极限值。${PLAIN}"
-    echo -e "  ${BLUE}3. 🔍 详细体检内核与网络加速算法生效状态 (Status Check)${PLAIN}"
+    echo -e "  ${BLUE}4. 🔄 一键检查与在线升级 (脚本 & XanMod内核)${PLAIN}"
+    echo -e "     ${YELLOW}└─ 智能检测云端脚本与内核最新版，一键无损热升级。${PLAIN}"
+    echo -e "  ${BLUE}9. 🔍 详细体检内核与网络加速算法生效状态 (Status Check)${PLAIN}"
     echo -e "  ${RED}0. 退出脚本${PLAIN}"
     echo -e "${BLUE}==================================================${PLAIN}"
-    read -p "请输入数字 [0-3] (默认: ${DEFAULT_CHOICE}): " CHOICE
+    read -p "请输入数字 [0-4, 9] (默认: ${DEFAULT_CHOICE}): " CHOICE
 
     # 动态应用智能默认选项
     if [ -z "$CHOICE" ]; then CHOICE=$DEFAULT_CHOICE; fi
 
     case "$CHOICE" in
-        1|2)
+        1|2|3)
             if [ "$ALREADY_XANMOD" = "true" ]; then
                 clear
                 echo -e "${YELLOW}==================================================${PLAIN}"
                 echo -e "⚠️  ${RED}【高亮提醒】您的服务器当前已经是 XanMod 内核！${PLAIN}"
                 echo -e "${YELLOW}==================================================${PLAIN}"
                 read -p "您是想继续覆盖调优配置并检查源更新吗？[Y:继续 / N:退出, 默认Y]: " WARN_CHOICE
+                WARN_CHOICE=${WARN_CHOICE:-Y}
                 WARN_CHOICE=$(echo "$WARN_CHOICE" | tr '[:lower:]' '[:upper:]')
                 if [ "$WARN_CHOICE" = "N" ]; then exit 0; fi
             fi
             break
             ;;
-        3) verify_status ;;
+        4) check_and_upgrade ;;
+        9) verify_status ;;
         0) echo -e "${BLUE}已安全退出脚本。${PLAIN}"; exit 0 ;;
         *) echo -e "${RED}[错误] 输入无效，请重新选择！${PLAIN}"; sleep 1 ;;
     esac
 done
 
 # ====================================================================
-# 14. 执行优化写入流程
+# 15. 执行优化写入流程
 # ====================================================================
 auto_manage_swap
 solidify_virtio_drivers
 clean_sysctl
-write_base_sysctl
+write_base_sysctl "$CHOICE"
 
 if [ "$CHOICE" -eq 1 ]; then
-    SCENARIO="[小白模式] 智能自适应全局调优"
+    SCENARIO="[小白/一键] 综合环境稳健全栈调优 (建站+代理)"
     
-    # 动态内存计算 (防 OOM 并最大化吞吐)
+    # 动态内存计算 (稳健分配 ~1.5%，截断 32MB 防 OOM)
     TOTAL_MEM_MB=$(get_ram_mb)
     MAX_MEM_BYTES=$((TOTAL_MEM_MB * 1024 * 1024 * 15 / 1000))
     if [ "$MAX_MEM_BYTES" -lt 4194304 ]; then MAX_MEM_BYTES=4194304; fi
-    if [ "$MAX_MEM_BYTES" -gt 67108864 ]; then MAX_MEM_BYTES=67108864; fi
+    if [ "$MAX_MEM_BYTES" -gt 33554432 ]; then MAX_MEM_BYTES=33554432; fi
 
-    CONFIG_SUMMARY="BBRv3 + FQ + 动态内存计算 TCP 缓冲 ($((MAX_MEM_BYTES/1024/1024))MB)"
+    CONFIG_SUMMARY="BBRv3 + FQ + 稳健TCP缓冲($((MAX_MEM_BYTES/1024/1024))MB) + 32MB UDP/QUIC (防OOM保活)"
     
     echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
     echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
@@ -640,7 +765,23 @@ if [ "$CHOICE" -eq 1 ]; then
     echo "net.ipv4.tcp_wmem=4096 65536 ${MAX_MEM_BYTES}" >> /etc/sysctl.conf
 
 elif [ "$CHOICE" -eq 2 ]; then
-    SCENARIO="[极客模式] 针对性链路 BDP 定制调优"
+    SCENARIO="[新机/开荒] 纯代理极致加速全栈调优 (翻墙专机)"
+    
+    # 动态内存计算 (极限分配 ~2.5%，放满 64MB)
+    TOTAL_MEM_MB=$(get_ram_mb)
+    MAX_MEM_BYTES=$((TOTAL_MEM_MB * 1024 * 1024 * 25 / 1000))
+    if [ "$MAX_MEM_BYTES" -lt 4194304 ]; then MAX_MEM_BYTES=4194304; fi
+    if [ "$MAX_MEM_BYTES" -gt 67108864 ]; then MAX_MEM_BYTES=67108864; fi
+
+    CONFIG_SUMMARY="BBRv3 + FQ + 满血TCP缓冲($((MAX_MEM_BYTES/1024/1024))MB) + 64MB UDP/QUIC (极速状态机回收)"
+    
+    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_rmem=4096 87380 ${MAX_MEM_BYTES}" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_wmem=4096 65536 ${MAX_MEM_BYTES}" >> /etc/sysctl.conf
+
+elif [ "$CHOICE" -eq 3 ]; then
+    SCENARIO="[高手/极客] 目标节点精准手工调优"
     clear
     echo -e "${BLUE}=== 极客模式：动态带宽延迟乘积 (BDP) 计算 ===${PLAIN}"
     echo -e "${YELLOW}提示：如果你是中转机，请输入到落地机的实测网络数据；如果是单机，请输入到本地的测速数据。${PLAIN}"
@@ -661,7 +802,6 @@ elif [ "$CHOICE" -eq 2 ]; then
 
     # BDP 计算: 带宽(Mbps) * 延迟(ms) * 125 = BDP 字节数
     BDP_BYTES=$(( TARGET_BW * TARGET_RTT * 125 * 3 / 2 ))
-    
     if [ "$BDP_BYTES" -lt 4194304 ]; then BDP_BYTES=4194304; fi
 
     CONFIG_SUMMARY="BBRv3 + FQ + 精准BDP极限缓冲 ($((BDP_BYTES/1024/1024))MB, 目标:${TARGET_BW}M/${TARGET_RTT}ms)"
@@ -672,7 +812,7 @@ elif [ "$CHOICE" -eq 2 ]; then
     echo "net.ipv4.tcp_wmem=4096 65536 ${BDP_BYTES}" >> /etc/sysctl.conf
 fi
 
-# 15. 开始执行源配置与更新
+# 16. 开始执行源配置与更新
 echo -e "\n${BLUE}[1/3] 开始配置 XanMod 官方存储库...${PLAIN}"
 rm -f /etc/apt/sources.list.d/xanmod-release.list
 install -d -m 0755 /etc/apt/keyrings
@@ -716,7 +856,7 @@ echo "deb [signed-by=${KEYRING_FILE}] http://deb.xanmod.org ${CODENAME} main" | 
 dpkg --configure -a >/dev/null 2>&1
 DEBIAN_FRONTEND=noninteractive retry_command apt update >/dev/null
 
-# 16. 智能版本比对 (多语言环境自适应，精准追踪当前 CPU 架构的内核包)
+# 17. 智能版本比对 (多语言环境自适应，精准追踪当前 CPU 架构的内核包)
 SKIP_KERNEL_INSTALL=false
 NEED_REBOOT=false
 
@@ -742,17 +882,17 @@ if [ "$SKIP_KERNEL_INSTALL" = "false" ]; then
     NEED_REBOOT=true
 fi
 
-# 17. 固化驱动镜像与更新引导
+# 18. 固化驱动镜像与更新引导
 if [ "$NEED_REBOOT" = "true" ]; then
     echo -e "\n${BLUE}[3/3] 正在生成完整 Initramfs 镜像并更新 GRUB 引导...${PLAIN}"
     update-initramfs -u -k all >/dev/null 2>&1
     retry_command update-grub
 fi
 
-# 18. 应用系统优化配置 (-e 忽略未知参数，确保配置最大化加载)
+# 19. 应用系统优化配置 (-e 忽略未知参数，确保配置最大化加载)
 sysctl -e -p /etc/sysctl.conf > /dev/null 2>&1
 
-# 19. 漂亮的执行结果输出
+# 20. 漂亮的执行结果输出
 clear
 echo -e "${GREEN}==================================================${PLAIN}"
 echo -e "          🎉 内核配置与极客全栈调优执行完毕！"
@@ -764,7 +904,7 @@ echo -e "网络拓扑：${BLUE}${IP_STACK_TEXT}${PLAIN}"
 echo -e "高级特性：${YELLOW}VirtIO驱动固化 / UDP扩容 / TIME_WAIT回收 / PMTU探测 / Swap气囊${PLAIN} 已全开"
 echo -e "${GREEN}==================================================${PLAIN}"
 
-# 20. 智能倒计时重启机制
+# 21. 智能倒计时重启机制
 if [ "$NEED_REBOOT" = "true" ]; then
     echo -e "${YELLOW}新内核已安装，系统将在 7 秒后自动重启使其生效！${PLAIN}"
     for i in {7..1}; do
@@ -775,6 +915,6 @@ if [ "$NEED_REBOOT" = "true" ]; then
     reboot
 else
     echo -e "${GREEN}🎉 新调优参数已立即应用热生效，无需重启！${PLAIN}"
-    echo -e "您可立即再次运行本脚本选择 [3] 查看全量参数体检清单。${PLAIN}"
+    echo -e "您可立即再次运行本脚本选择 [9] 查看全量参数体检清单。${PLAIN}"
     echo -e "${GREEN}==================================================${PLAIN}"
 fi
