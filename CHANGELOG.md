@@ -5,6 +5,17 @@
 
 ---
 
+## [v2.1.1] - 2026-10-30
+
+### 🛡️ Debian 13 Sequoia PGP 与系统自愈专项修复
+- **dpkg 中断状态全自动自愈**：在脚本启动与关键安装节点强制注入 `dpkg --configure -a` 与 `apt-get --fix-broken install -y`，自动修复前序意外中断遗留的半配置暗病，彻底确保依赖与内核能正常安装；
+- **Sequoia PGP (`sqv`) 与 GnuPG 双轨密钥兼容引擎**：
+  - 支持 `gpg --dearmor` 生成二进制 `.gpg` 密钥；若系统环境缺失 `gpg`，自动无缝降级直接生成 Debian 13 `sqv` 原生支持的 `.asc` (ASCII Armor) 密钥；
+  - 强制对密钥文件执行 `chmod 644`，保证非特权 `_apt` 验签账户顺利读取，根除 `Failed to parse keyring` 与 `repository is not signed` 报错；
+- **备用密钥源容灾**：新增 Alexandre Frade 官方 GitLab 镜像证书下载备用链路，防范主站网络波动。
+
+---
+
 ## [v2.1.0] - 2026-10-30
 
 ### 🚀 新特性与系统适配

@@ -18,6 +18,11 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# 系统自愈机制：自动解决历史中断遗留的 dpkg 锁死与未完成配置状态
+if command -v dpkg >/dev/null 2>&1; then
+    dpkg --configure -a >/dev/null 2>&1
+fi
+
 if [ ! -f /etc/os-release ]; then
     echo -e "${RED}[错误] 无法识别当前系统架构！${PLAIN}"
     exit 1
@@ -79,9 +84,12 @@ if [ "$SUPPORTED" = "false" ]; then
 fi
 
 # 2. 预检并安装基础依赖
-if ! command -v gpg >/dev/null || ! command -v wget >/dev/null || ! command -v curl >/dev/null || [ ! -d /etc/ssl/certs ]; then
-    echo -e "${BLUE}正在检查并安装系统必要依赖程序...${PLAIN}"
-    DEBIAN_FRONTEND=noninteractive apt update && DEBIAN_FRONTEND=noninteractive apt install wget curl gnupg lsb-release ca-certificates -y
+if ! command -v gpg >/dev/null 2>&1 || ! command -v wget >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || [ ! -d /etc/ssl/certs ]; then
+    echo -e "${BLUE}正在修复包管理器状态并安装基础必要依赖...${PLAIN}"
+    dpkg --configure -a >/dev/null 2>&1
+    DEBIAN_FRONTEND=noninteractive apt-get --fix-broken install -y >/dev/null 2>&1
+    DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1
+    DEBIAN_FRONTEND=noninteractive apt-get install wget curl gpg gnupg lsb-release ca-certificates -y >/dev/null 2>&1
 fi
 
 # ====================================================================
@@ -678,16 +686,34 @@ curl -fsSL -A "${FAKE_UA}" --connect-timeout 10 --retry 3 https://dl.xanmod.org/
 if [ ! -s "$TMP_KEY" ] || ! grep -q "PGP PUBLIC KEY" "$TMP_KEY"; then
     wget -qO "$TMP_KEY" -U "${FAKE_UA}" --timeout=10 --tries=3 https://dl.xanmod.org/archive.key >/dev/null 2>&1
 fi
+# 官方 GitLab 备用镜像源
+if [ ! -s "$TMP_KEY" ] || ! grep -q "PGP PUBLIC KEY" "$TMP_KEY"; then
+    curl -fsSL -A "${FAKE_UA}" --connect-timeout 10 --retry 3 https://gitlab.com/afrd.gpg -o "$TMP_KEY" 2>/dev/null
+fi
 
+KEYRING_FILE=""
 if [ -s "$TMP_KEY" ] && grep -q "PGP PUBLIC KEY" "$TMP_KEY"; then
-    gpg --dearmor --yes -o /etc/apt/keyrings/xanmod-archive-keyring.gpg "$TMP_KEY"
+    # 优先方案 A：若环境存在 gpg，使用 gpg --dearmor 生成二进制 .gpg 密钥
+    if command -v gpg >/dev/null 2>&1; then
+        KEYRING_FILE="/etc/apt/keyrings/xanmod-archive-keyring.gpg"
+        gpg --dearmor --yes -o "$KEYRING_FILE" "$TMP_KEY" >/dev/null 2>&1
+    fi
+    # 备用方案 B (Debian 13 Sequoia sqv / 现代 APT 原生兼容)：
+    # 若 gpg 不可用或转换失败，直接保存为 ASCII Armor (.asc) 形式，Debian 13 sqv 原生完美支持
+    if [ ! -s "$KEYRING_FILE" ]; then
+        KEYRING_FILE="/etc/apt/keyrings/xanmod-archive-keyring.asc"
+        cp -f "$TMP_KEY" "$KEYRING_FILE"
+    fi
+    # 强制赋予 644 权限，确保 _apt 非特权账户可正常读取校验
+    chmod 644 "$KEYRING_FILE" 2>/dev/null || true
     rm -f "$TMP_KEY"
 else
     echo -e "${RED}[错误] PGP 证书获取失败！网络被阻断。${PLAIN}"
     exit 1
 fi
 
-echo "deb [signed-by=/etc/apt/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org ${CODENAME} main" | tee /etc/apt/sources.list.d/xanmod-release.list
+echo "deb [signed-by=${KEYRING_FILE}] http://deb.xanmod.org ${CODENAME} main" | tee /etc/apt/sources.list.d/xanmod-release.list
+dpkg --configure -a >/dev/null 2>&1
 DEBIAN_FRONTEND=noninteractive retry_command apt update >/dev/null
 
 # 16. 智能版本比对 (多语言环境自适应，精准追踪当前 CPU 架构的内核包)
@@ -707,6 +733,7 @@ fi
 
 if [ "$SKIP_KERNEL_INSTALL" = "false" ]; then
     echo -e "\n${BLUE}[2/3] 正在安装/升级 XanMod [${KERNEL_PKG}] 内核包...${PLAIN}"
+    dpkg --configure -a >/dev/null 2>&1
     DEBIAN_FRONTEND=noninteractive retry_command apt install ${KERNEL_PKG} -y
     if [ $? -ne 0 ]; then
         echo -e "${RED}[错误] 内核程序安装/升级失败！${PLAIN}"
