@@ -1,0 +1,5 @@
+# 核心作用：统一 Git 跨平台换行符规范，强制 Shell 脚本使用 LF 换行
+* text=auto eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash # 核心作用：Debian/Ubuntu 一键安装 XanMod BBRv3 与全栈网络极致性能动态调优生命周期管理
 
 # ====================================================================
 # 项目名称: Debian/Ubuntu XanMod BBRv3 智能网络生命周期管理 (全栈极致版)
@@ -25,24 +25,63 @@ fi
 
 . /etc/os-release
 
-# 限制支持 Debian 12/13 和 Ubuntu LTS 版本
+# 标准化 Debian / Ubuntu 版本信息与代号兼容 (增强对 Debian 13 Trixie 测试/滚动/云镜像的识别)
 SUPPORTED=false
-if [ "$ID" = "debian" ] && { [ "$VERSION_ID" = "12" ] || [ "$VERSION_ID" = "13" ]; }; then
-    SUPPORTED=true
-elif [ "$ID" = "ubuntu" ] && { [ "$VERSION_ID" = "20.04" ] || [ "$VERSION_ID" = "22.04" ] || [ "$VERSION_ID" = "24.04" ] || [ "$VERSION_ID" = "26.04" ]; }; then
-    SUPPORTED=true
+
+OS_ID="${ID:-}"
+OS_ID_LIKE="${ID_LIKE:-}"
+OS_VER_ID="${VERSION_ID:-}"
+OS_CODENAME="${VERSION_CODENAME:-}"
+
+# 尝试通过 /etc/debian_version 兜底检测 Debian 测试版/衍生版本
+if [ -z "$OS_CODENAME" ] && [ -f /etc/debian_version ]; then
+    DEB_VER=$(cat /etc/debian_version 2>/dev/null)
+    if [[ "$DEB_VER" == 13* ]] || [[ "$DEB_VER" == *"trixie"* ]]; then
+        OS_CODENAME="trixie"
+        [ -z "$OS_VER_ID" ] && OS_VER_ID="13"
+    elif [[ "$DEB_VER" == 12* ]] || [[ "$DEB_VER" == *"bookworm"* ]]; then
+        OS_CODENAME="bookworm"
+        [ -z "$OS_VER_ID" ] && OS_VER_ID="12"
+    fi
+fi
+
+# 若为 trixie 且未带版本号，规范化为 Debian 13
+if [ "$OS_CODENAME" = "trixie" ] || [[ "${VERSION:-}" == *"trixie"* ]]; then
+    OS_ID="debian"
+    OS_VER_ID="13"
+    OS_CODENAME="trixie"
+elif [ "$OS_CODENAME" = "bookworm" ] || [[ "${VERSION:-}" == *"bookworm"* ]]; then
+    OS_ID="debian"
+    OS_VER_ID="12"
+    OS_CODENAME="bookworm"
+fi
+
+if [ "$OS_ID" = "debian" ] || [[ "$OS_ID_LIKE" =~ debian ]]; then
+    if [ "$OS_VER_ID" = "12" ] || [ "$OS_VER_ID" = "13" ]; then
+        SUPPORTED=true
+        ID="debian"
+        VERSION_ID="$OS_VER_ID"
+        VERSION_CODENAME="${OS_CODENAME:-$VERSION_CODENAME}"
+    fi
+elif [ "$OS_ID" = "ubuntu" ] || [[ "$OS_ID_LIKE" =~ ubuntu ]]; then
+    if [ "$OS_VER_ID" = "20.04" ] || [ "$OS_VER_ID" = "22.04" ] || [ "$OS_VER_ID" = "24.04" ] || [ "$OS_VER_ID" = "26.04" ]; then
+        SUPPORTED=true
+        ID="ubuntu"
+        VERSION_ID="$OS_VER_ID"
+        VERSION_CODENAME="${OS_CODENAME:-$VERSION_CODENAME}"
+    fi
 fi
 
 if [ "$SUPPORTED" = "false" ]; then
     echo -e "${RED}[错误] 本脚本仅支持 Debian 12/13 以及 Ubuntu LTS (20.04/22.04/24.04/26.04)！${PLAIN}"
-    echo -e "${YELLOW}当前系统为: ${ID} ${VERSION_ID:-未知版本}${PLAIN}"
+    echo -e "${YELLOW}当前系统为: ${ID:-未知} ${VERSION_ID:-未知版本} (${VERSION_CODENAME:-未知代号})${PLAIN}"
     exit 1
 fi
 
 # 2. 预检并安装基础依赖
 if ! command -v gpg >/dev/null || ! command -v wget >/dev/null || ! command -v curl >/dev/null || [ ! -d /etc/ssl/certs ]; then
     echo -e "${BLUE}正在检查并安装系统必要依赖程序...${PLAIN}"
-    apt update && apt install wget curl gnupg lsb-release ca-certificates -y
+    DEBIAN_FRONTEND=noninteractive apt update && DEBIAN_FRONTEND=noninteractive apt install wget curl gnupg lsb-release ca-certificates -y
 fi
 
 # ====================================================================
@@ -75,12 +114,12 @@ get_country_code() {
     if [ "$HAS_IPV4" = "false" ] && [ "$HAS_IPV6" = "true" ]; then
         curl_flag="-6"
     fi
-    cc=$(curl $curl_flag -s --connect-timeout 3 https://www.cloudflare.com/cdn-cgi/trace | grep -E '^loc=' | cut -d= -f2)
+    cc=$(curl $curl_flag -s --connect-timeout 4 https://www.cloudflare.com/cdn-cgi/trace | grep -E '^loc=' | cut -d= -f2)
     if [ -n "$cc" ] && [ "$cc" != "XX" ] && [ ${#cc} -eq 2 ]; then
         echo "$cc"
         return
     fi
-    cc=$(curl $curl_flag -s --connect-timeout 3 https://ipinfo.io/country)
+    cc=$(curl $curl_flag -s --connect-timeout 4 https://ipinfo.io/country)
     if [ -n "$cc" ] && [ ${#cc} -eq 2 ]; then
         echo "$cc"
         return
@@ -180,10 +219,26 @@ case "$CPU_TIER" in
     x64v1) CPU_TIER_TEXT="x86-64-v1 (⚙️ 基础通用兜底指令集)" ;;
 esac
 
-CODENAME=$VERSION_CODENAME
-if [ "$ID" = "debian" ] && [ "$VERSION_ID" = "12" ]; then
+# 规范化 Codename
+CODENAME="${VERSION_CODENAME}"
+if [ -z "$CODENAME" ] && command -v lsb_release >/dev/null 2>&1; then
+    CODENAME=$(lsb_release -sc 2>/dev/null)
+fi
+if [ -z "$CODENAME" ]; then
+    if [ "$ID" = "debian" ] && [ "$VERSION_ID" = "13" ]; then CODENAME="trixie"
+    elif [ "$ID" = "debian" ] && [ "$VERSION_ID" = "12" ]; then CODENAME="bookworm"
+    fi
+fi
+
+# 内核包名策略适配 (解决 x64v1 无标准版崩溃问题，并针对 Debian 12/13 提供最高稳定性)
+if [ "$CPU_TIER" = "x64v1" ]; then
+    # XanMod 官方仓库仅在 LTS 分支提供 x64v1 兜底支持
+    KERNEL_PKG="linux-xanmod-lts-x64v1"
+elif [ "$ID" = "debian" ]; then
+    # Debian 12 与 13 采用稳定且深度调优的 LTS 分支（内置完整 BBRv3 + FQ）
     KERNEL_PKG="linux-xanmod-lts-${CPU_TIER}"
 else
+    # Ubuntu LTS 默认选用匹配 CPU 指令集的最新版内核
     KERNEL_PKG="linux-xanmod-${CPU_TIER}"
 fi
 
@@ -205,11 +260,19 @@ retry_command() {
 }
 
 # ====================================================================
-# 8. 小内存智能“急救气囊” (Swap 自动兜底检测与创建)
+# 8. 内存查询助手与小内存智能“急救气囊” (Swap 自动兜底检测与创建)
 # ====================================================================
+get_ram_mb() {
+    free -m | awk '/^Mem:/{print $2}'
+}
+
+get_swap_mb() {
+    free -m | awk '/^Swap:/{print $2}'
+}
+
 auto_manage_swap() {
-    local total_ram_mb=$(free -m | awk '/^Mem:/{print $2}')
-    local current_swap_mb=$(free -m | awk '/^Swap:/{print $2}')
+    local total_ram_mb=$(get_ram_mb)
+    local current_swap_mb=$(get_swap_mb)
 
     if [ "$total_ram_mb" -le 1536 ] && [ "$current_swap_mb" -lt 512 ]; then
         echo -e "${YELLOW}[内存急救] 检测到本机物理内存较小 (${total_ram_mb}MB) 且无充足 Swap，正在自动创建 1GB 虚拟内存保命气囊...${PLAIN}"
@@ -228,7 +291,8 @@ auto_manage_swap() {
 # 9. VirtIO 核心驱动固化 (针对所有海外 KVM VPS 防断网/防丢盘)
 # ====================================================================
 solidify_virtio_drivers() {
-    if [ -f /etc/initramfs-tools/modules ]; then
+    if [ -d /etc/initramfs-tools ]; then
+        touch /etc/initramfs-tools/modules
         for mod in virtio virtio_pci virtio_net virtio_blk virtio_scsi virtio_ring; do
             if ! grep -q "^$mod" /etc/initramfs-tools/modules 2>/dev/null; then
                 echo "$mod" >> /etc/initramfs-tools/modules
@@ -237,7 +301,7 @@ solidify_virtio_drivers() {
     fi
 }
 
-# 10. 深度清理旧系统参数
+# 10. 深度清理旧系统参数 (单次批量 sed 减少磁盘 I/O 损耗)
 clean_sysctl() {
     local params=(
         "net.core.default_qdisc" "net.ipv4.tcp_congestion_control" "net.ipv4.tcp_rmem" "net.ipv4.tcp_wmem"
@@ -253,9 +317,15 @@ clean_sysctl() {
         "net.netfilter.nf_conntrack_max" "net.netfilter.nf_conntrack_tcp_timeout_established"
         "net.netfilter.nf_conntrack_tcp_timeout_close_wait" "net.netfilter.nf_conntrack_tcp_timeout_time_wait"
     )
-    for p in "${params[@]}"; do
-        sed -i "/^${p}/d" /etc/sysctl.conf
-    done
+    if [ -f /etc/sysctl.conf ]; then
+        local sed_expr=""
+        for p in "${params[@]}"; do
+            sed_expr+="/^${p}/d;"
+        done
+        if [ -n "$sed_expr" ]; then
+            sed -i "$sed_expr" /etc/sysctl.conf
+        fi
+    fi
 }
 
 # 11. 写入全栈极致底层优化 (双轨通用部分)
@@ -435,7 +505,7 @@ verify_status() {
     local ip6_ra=$(sysctl -n net.ipv6.conf.all.accept_ra 2>/dev/null)
     local swappiness=$(sysctl -n vm.swappiness 2>/dev/null)
     local dirty=$(sysctl -n vm.dirty_ratio 2>/dev/null)
-    local current_swap=$(free -m | awk '/^Swap:/{print $2}')
+    local current_swap=$(get_swap_mb)
 
     echo -e "  ├─ 当前网络栈拓扑     : ${GREEN}${IP_STACK_TEXT}${PLAIN}"
     echo -e "  ├─ IPv4 路由转发      : $(if [ "$ip4_fwd" = "1" ]; then echo -e "${GREEN}已开启${PLAIN}"; else echo -e "${YELLOW}未开启${PLAIN}"; fi)"
@@ -463,8 +533,8 @@ while true; do
         ALREADY_XANMOD=true
     fi
 
-    TOTAL_RAM_SHOW=$(free -m | awk '/^Mem:/{print $2}')
-    TOTAL_SWAP_SHOW=$(free -m | awk '/^Swap:/{print $2}')
+    TOTAL_RAM_SHOW=$(get_ram_mb)
+    TOTAL_SWAP_SHOW=$(get_swap_mb)
 
     # 动态检测当前运行状态
     CURRENT_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
@@ -549,7 +619,7 @@ if [ "$CHOICE" -eq 1 ]; then
     SCENARIO="[小白模式] 智能自适应全局调优"
     
     # 动态内存计算 (防 OOM 并最大化吞吐)
-    TOTAL_MEM_MB=$(free -m | awk '/^Mem:/{print $2}')
+    TOTAL_MEM_MB=$(get_ram_mb)
     MAX_MEM_BYTES=$((TOTAL_MEM_MB * 1024 * 1024 * 15 / 1000))
     if [ "$MAX_MEM_BYTES" -lt 4194304 ]; then MAX_MEM_BYTES=4194304; fi
     if [ "$MAX_MEM_BYTES" -gt 67108864 ]; then MAX_MEM_BYTES=67108864; fi
@@ -569,9 +639,17 @@ elif [ "$CHOICE" -eq 2 ]; then
     
     read -p "1. 请输入实测最高带宽 (单位: Mbps, 默认: 1000): " TARGET_BW
     TARGET_BW=${TARGET_BW:-1000}
+    if ! [[ "$TARGET_BW" =~ ^[0-9]+$ ]] || [ "$TARGET_BW" -le 0 ]; then
+        echo -e "${YELLOW}[警告] 无效的带宽输入，已重置为默认值 1000 Mbps。${PLAIN}"
+        TARGET_BW=1000
+    fi
     
     read -p "2. 请输入平均网络延迟 RTT (单位: ms, 默认: 150): " TARGET_RTT
     TARGET_RTT=${TARGET_RTT:-150}
+    if ! [[ "$TARGET_RTT" =~ ^[0-9]+$ ]] || [ "$TARGET_RTT" -le 0 ]; then
+        echo -e "${YELLOW}[警告] 无效的延迟输入，已重置为默认值 150 ms。${PLAIN}"
+        TARGET_RTT=150
+    fi
 
     # BDP 计算: 带宽(Mbps) * 延迟(ms) * 125 = BDP 字节数
     BDP_BYTES=$(( TARGET_BW * TARGET_RTT * 125 * 3 / 2 ))
@@ -610,15 +688,16 @@ else
 fi
 
 echo "deb [signed-by=/etc/apt/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org ${CODENAME} main" | tee /etc/apt/sources.list.d/xanmod-release.list
-retry_command apt update >/dev/null
+DEBIAN_FRONTEND=noninteractive retry_command apt update >/dev/null
 
-# 16. 智能版本比对 (精准追踪当前 CPU 架构的内核包)
+# 16. 智能版本比对 (多语言环境自适应，精准追踪当前 CPU 架构的内核包)
 SKIP_KERNEL_INSTALL=false
 NEED_REBOOT=false
 
 if dpkg -l | grep -q "${KERNEL_PKG}"; then
     INSTALLED_VER=$(dpkg-query -W -f='${Version}' ${KERNEL_PKG} 2>/dev/null)
-    LATEST_VER=$(apt-cache policy ${KERNEL_PKG} | grep "Candidate:" | awk '{print $2}')
+    LATEST_VER=$(apt-cache madison ${KERNEL_PKG} 2>/dev/null | head -n 1 | awk '{print $3}')
+    [ -z "$LATEST_VER" ] && LATEST_VER=$(LC_ALL=C apt-cache policy ${KERNEL_PKG} 2>/dev/null | grep "Candidate:" | awk '{print $2}')
     
     if [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
         echo -e "\n${GREEN}[提示] XanMod 内核已是对应 CPU 架构最新版 (${INSTALLED_VER})，跳过重装。${PLAIN}"
@@ -628,7 +707,7 @@ fi
 
 if [ "$SKIP_KERNEL_INSTALL" = "false" ]; then
     echo -e "\n${BLUE}[2/3] 正在安装/升级 XanMod [${KERNEL_PKG}] 内核包...${PLAIN}"
-    retry_command apt install ${KERNEL_PKG} -y
+    DEBIAN_FRONTEND=noninteractive retry_command apt install ${KERNEL_PKG} -y
     if [ $? -ne 0 ]; then
         echo -e "${RED}[错误] 内核程序安装/升级失败！${PLAIN}"
         exit 1
@@ -643,8 +722,8 @@ if [ "$NEED_REBOOT" = "true" ]; then
     retry_command update-grub
 fi
 
-# 18. 应用系统优化配置
-sysctl -p > /dev/null 2>&1
+# 18. 应用系统优化配置 (-e 忽略未知参数，确保配置最大化加载)
+sysctl -e -p /etc/sysctl.conf > /dev/null 2>&1
 
 # 19. 漂亮的执行结果输出
 clear
