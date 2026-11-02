@@ -655,7 +655,8 @@ ensure_xanmod_repo() {
         keyring_file="/etc/apt/keyrings/xanmod-archive-keyring.asc"
     fi
 
-    if [ -n "$keyring_file" ] && [ -f /etc/apt/sources.list.d/xanmod-release.list ] && grep -q "deb.xanmod.org" /etc/apt/sources.list.d/xanmod-release.list 2>/dev/null; then
+    # 校验源配置：若已存在且使用安全 HTTPS，则直接放行
+    if [ -n "$keyring_file" ] && [ -f /etc/apt/sources.list.d/xanmod-release.list ] && grep -q "https://deb.xanmod.org" /etc/apt/sources.list.d/xanmod-release.list 2>/dev/null; then
         return 0
     fi
 
@@ -690,10 +691,46 @@ ensure_xanmod_repo() {
         return 1
     fi
 
-    echo "deb [signed-by=${keyring_file}] http://deb.xanmod.org ${CODENAME} main" | tee /etc/apt/sources.list.d/xanmod-release.list >/dev/null
+    # 强制采用 HTTPS 加密传输，杜绝 HTTP 透明缓存污染与 Hash Mismatch
+    echo "deb [signed-by=${keyring_file}] https://deb.xanmod.org ${CODENAME} main" | tee /etc/apt/sources.list.d/xanmod-release.list >/dev/null
     dpkg --configure -a >/dev/null 2>&1
     DEBIAN_FRONTEND=noninteractive retry_command apt update >/dev/null
     return 0
+}
+
+# ====================================================================
+# APT 缓存自愈与云端索引强制对齐 (根治 Hash Sum mismatch / Partial 损坏)
+# ====================================================================
+heal_apt_cache() {
+    rm -rf /var/lib/apt/lists/*xanmod* /var/cache/apt/archives/partial/* /var/cache/apt/archives/*xanmod* >/dev/null 2>&1
+    apt-get clean >/dev/null 2>&1
+    dpkg --configure -a >/dev/null 2>&1
+    DEBIAN_FRONTEND=noninteractive apt-get update --fix-missing -y >/dev/null 2>&1
+}
+
+# 内核高可靠自愈安装引擎 (发生异常自动清洗脏缓存并重试)
+install_kernel_with_self_healing() {
+    local target_pkg="$1"
+    local extra_pkg="$2"
+    local max_attempts=5
+    local attempt=1
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        dpkg --configure -a >/dev/null 2>&1
+        if DEBIAN_FRONTEND=noninteractive apt-get install ${target_pkg} ${extra_pkg} -y; then
+            return 0
+        fi
+
+        if [ "$attempt" -lt "$max_attempts" ]; then
+            echo -e "${YELLOW}[自愈机制触发] 检测到安装异常 (可能存在 Hash Mismatch 或分片损坏)，正在自动清理脏缓存并重新对齐官方索引...${PLAIN}"
+            heal_apt_cache
+            sleep 2
+        fi
+        ((attempt++))
+    done
+
+    echo -e "${RED}[错误] 内核程序 [${target_pkg}] 安装失败，已重试 ${max_attempts} 次！${PLAIN}"
+    return 1
 }
 
 # ====================================================================
@@ -942,9 +979,13 @@ check_and_upgrade() {
             UP_K_CHOICE=${UP_K_CHOICE:-Y}
             UP_K_CHOICE=$(echo "$UP_K_CHOICE" | tr '[:lower:]' '[:upper:]')
             if [ "$UP_K_CHOICE" = "Y" ]; then
-                echo -e "\n${BLUE}正在安装 XanMod [${target_k_pkg}] 新内核...${PLAIN}"
-                dpkg --configure -a >/dev/null 2>&1
-                DEBIAN_FRONTEND=noninteractive retry_command apt install "${target_k_pkg}" -y
+                echo -e "\n${BLUE}正在安装 XanMod [${target_k_pkg}] 新内核 (全自动自愈机制已激活)...${PLAIN}"
+                install_kernel_with_self_healing "${target_k_pkg}"
+                if [ $? -ne 0 ]; then
+                    echo -e "${RED}[错误] 内核升级失败，请检查网络！${PLAIN}"
+                    read -p "按回车键返回主菜单..."
+                    return 1
+                fi
                 echo -e "\n${BLUE}正在重新生成完整 Initramfs 镜像并更新 GRUB 引导...${PLAIN}"
                 solidify_virtio_drivers
                 update-initramfs -u -k all >/dev/null 2>&1
@@ -1295,9 +1336,8 @@ if dpkg -l | grep -q "${KERNEL_PKG}"; then
 fi
 
 if [ "$SKIP_KERNEL_INSTALL" = "false" ]; then
-    echo -e "\n${BLUE}[2/3] 正在安装/部署 XanMod [${KERNEL_PKG}] 内核包...${PLAIN}"
-    dpkg --configure -a >/dev/null 2>&1
-    DEBIAN_FRONTEND=noninteractive retry_command apt install ${KERNEL_PKG} ${KERNEL_EXTRA_PKG} -y
+    echo -e "\n${BLUE}[2/3] 正在安装/部署 XanMod [${KERNEL_PKG}] 内核包 (全自动自愈机制已激活)...${PLAIN}"
+    install_kernel_with_self_healing "${KERNEL_PKG}" "${KERNEL_EXTRA_PKG}"
     if [ $? -ne 0 ]; then
         echo -e "${RED}[错误] 内核程序安装/升级失败！${PLAIN}"
         exit 1
@@ -1316,7 +1356,6 @@ if [ "$NEED_REBOOT" = "true" ]; then
     retry_command update-grub
 fi
 
-# 19. 应用系统优化配置 (-e 忽略未知参数，确保配置最大化加载)
 # 19. 应用系统优化配置 (-e 忽略未知参数，解耦加载独立调优文件)
 sysctl -e -p "$BBR_SYSCTL_FILE" > /dev/null 2>&1
 
