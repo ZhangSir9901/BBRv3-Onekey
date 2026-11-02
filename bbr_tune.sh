@@ -1,5 +1,5 @@
 #!/bin/bash # 核心作用：Debian/Ubuntu 一键安装 XanMod BBRv3 与全栈网络极致性能动态调优生命周期管理
-# SCRIPT_VERSION="2.3.0"
+# SCRIPT_VERSION="2.4.0"
 
 # ====================================================================
 # 项目名称: Debian/Ubuntu XanMod BBRv3 智能网络生命周期管理 (全栈极致版)
@@ -311,15 +311,189 @@ solidify_virtio_drivers() {
     fi
 }
 
+# 常量与状态存储路径定义 (解耦独立配置与出厂快照)
+BBR_SYSCTL_FILE="/etc/sysctl.d/99-bbr-tune.conf"
+SNAPSHOT_DIR="/var/lib/bbr_tune"
+SNAPSHOT_FILE="/var/lib/bbr_tune/factory.snapshot"
+INITCWND_SCRIPT="/usr/local/sbin/bbr-initcwnd.sh"
+INITCWND_SERVICE="/etc/systemd/system/bbr-initcwnd.service"
+
+# ====================================================================
+# 出厂网络配置快照自动备份 (为一键安全回滚提供坚实基石)
+# ====================================================================
+take_factory_snapshot() {
+    if [ -f "$SNAPSHOT_FILE" ]; then
+        return 0
+    fi
+    mkdir -p "$SNAPSHOT_DIR"
+    local tmp_snap
+    tmp_snap=$(mktemp "${SNAPSHOT_FILE}.XXXXXX" 2>/dev/null) || return 1
+    {
+        echo "# BBRv3-Onekey 出厂网络配置快照 $(date -u +%FT%TZ)"
+        echo "KERNEL=$(uname -r)"
+        local default_route
+        default_route=$(ip -4 route show default 2>/dev/null | head -n 1)
+        echo "DEFAULT_ROUTE=${default_route}"
+
+        local check_keys=(
+            "net.core.default_qdisc" "net.ipv4.tcp_congestion_control" "net.ipv4.tcp_rmem" "net.ipv4.tcp_wmem"
+            "net.core.rmem_max" "net.core.wmem_max" "net.core.somaxconn" "net.core.netdev_max_backlog"
+            "net.core.netdev_budget" "net.core.optmem_max" "net.ipv4.tcp_tw_reuse" "net.ipv4.tcp_fastopen"
+            "net.ipv4.tcp_slow_start_after_idle" "net.ipv4.tcp_notsent_lowat" "net.ipv4.ip_forward"
+            "vm.swappiness"
+        )
+        for k in "${check_keys[@]}"; do
+            local val
+            val=$(sysctl -n "$k" 2>/dev/null)
+            if [ -n "$val" ]; then
+                echo "SYSCTL:${k}=${val}"
+            fi
+        done
+    } > "$tmp_snap"
+    mv -f "$tmp_snap" "$SNAPSHOT_FILE"
+}
+
+# ====================================================================
+# initcwnd 32 起步满速注入与持久化 (免 RTT 等待，TLS 握手与首屏秒开)
+# ====================================================================
+apply_and_persist_initcwnd() {
+    local default_route
+    default_route=$(ip -4 route show default 2>/dev/null | head -n 1)
+    if [ -z "$default_route" ]; then
+        return 1
+    fi
+
+    local -a args=() clean_args=()
+    read -r -a args <<< "$default_route"
+    local skip=0
+    for token in "${args[@]}"; do
+        if [ "$skip" -eq 1 ]; then skip=0; continue; fi
+        case "$token" in
+            initcwnd|initrwnd) skip=1 ;;
+            *) clean_args+=("$token") ;;
+        esac
+    done
+
+    if [ "${#clean_args[@]}" -gt 1 ]; then
+        ip -4 route replace "${clean_args[@]}" initcwnd 32 initrwnd 32 2>/dev/null
+    fi
+
+    cat > "$INITCWND_SCRIPT" << 'EOF'
+#!/bin/bash # 核心作用：开机与网络就绪后自动注入并维持 initcwnd 32 首包秒开
+route=$(ip -4 route show default 2>/dev/null | head -n 1)
+if [ -n "$route" ]; then
+    read -r -a args <<< "$route"
+    clean=()
+    skip=0
+    for t in "${args[@]}"; do
+        if [ "$skip" -eq 1 ]; then skip=0; continue; fi
+        case "$t" in initcwnd|initrwnd) skip=1 ;; *) clean+=("$t") ;; esac
+    done
+    [ "${#clean[@]}" -gt 1 ] && ip -4 route replace "${clean[@]}" initcwnd 32 initrwnd 32 2>/dev/null
+fi
+EOF
+    chmod +x "$INITCWND_SCRIPT"
+
+    cat > "$INITCWND_SERVICE" << EOF
+[Unit]
+Description=BBRv3 Initcwnd 32 Performance Accelerator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${INITCWND_SCRIPT}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload >/dev/null 2>&1
+    systemctl enable bbr-initcwnd.service >/dev/null 2>&1
+    systemctl start bbr-initcwnd.service >/dev/null 2>&1
+}
+
+# ====================================================================
+# 一键回滚还原到系统出厂网络配置 (安全零残留)
+# ====================================================================
+rollback_to_factory() {
+    clear
+    echo -e "${YELLOW}==================================================================${PLAIN}"
+    echo -e "       ⏪ 一键回滚还原到系统出厂网络配置 (Rollback to Factory)      "
+    echo -e "${YELLOW}==================================================================${PLAIN}"
+    echo -e "此操作将执行以下恢复动作："
+    echo -e "  1. 移除独立调优配置文件 ${GREEN}${BBR_SYSCTL_FILE}${PLAIN}；"
+    echo -e "  2. 停止并注销 ${GREEN}bbr-initcwnd.service${PLAIN}，恢复出厂默认路由初始窗口；"
+    echo -e "  3. 还原出厂快照记录的基础 sysctl 参数并重新加载生效；"
+    echo -e "  4. 绝不卸载已安装的内核程序（保持系统可用引导）。"
+    echo -e "${YELLOW}------------------------------------------------------------------${PLAIN}"
+    read -p "您确认要回滚还原到出厂网络配置吗？[Y:确认回滚 / N:取消返回, 默认N]: " CONFIRM_RB
+    CONFIRM_RB=${CONFIRM_RB:-N}
+    CONFIRM_RB=$(echo "$CONFIRM_RB" | tr '[:lower:]' '[:upper:]')
+    if [ "$CONFIRM_RB" != "Y" ]; then
+        echo -e "${BLUE}已取消回滚操作，返回主菜单。${PLAIN}"
+        sleep 1
+        return 0
+    fi
+
+    echo -e "\n${BLUE}正在停止并注销 initcwnd 32 持久化服务...${PLAIN}"
+    systemctl disable --now bbr-initcwnd.service >/dev/null 2>&1
+    rm -f "$INITCWND_SERVICE" "$INITCWND_SCRIPT"
+    systemctl daemon-reload >/dev/null 2>&1
+
+    # 恢复默认路由初始窗口
+    local default_route
+    default_route=$(ip -4 route show default 2>/dev/null | head -n 1)
+    if [ -n "$default_route" ]; then
+        local -a args=() clean_args=()
+        read -r -a args <<< "$default_route"
+        local skip=0
+        for token in "${args[@]}"; do
+            if [ "$skip" -eq 1 ]; then skip=0; continue; fi
+            case "$token" in
+                initcwnd|initrwnd) skip=1 ;;
+                *) clean_args+=("$token") ;;
+            esac
+        done
+        if [ "${#clean_args[@]}" -gt 1 ]; then
+            ip -4 route replace "${clean_args[@]}" 2>/dev/null
+        fi
+    fi
+
+    echo -e "${BLUE}正在清除 BBRv3 独立调优参数文件...${PLAIN}"
+    rm -f "$BBR_SYSCTL_FILE"
+
+    # 如果有出厂快照，按快照逐项写回
+    if [ -f "$SNAPSHOT_FILE" ]; then
+        echo -e "${BLUE}正在从出厂快照恢复系统原始参数...${PLAIN}"
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^SYSCTL:(.+)=(.+)$ ]]; then
+                local k="${BASH_REMATCH[1]}"
+                local v="${BASH_REMATCH[2]}"
+                sysctl -w "${k}=${v}" >/dev/null 2>&1
+            fi
+        done < "$SNAPSHOT_FILE"
+    else
+        sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1
+        sysctl -w net.core.default_qdisc=fq_codel >/dev/null 2>&1
+    fi
+
+    sysctl --system >/dev/null 2>&1 || sysctl -p >/dev/null 2>&1
+    echo -e "\n${GREEN}🎉 系统网络配置已成功回滚恢复至出厂状态！${PLAIN}"
+    echo -e "${BLUE}==================================================================${PLAIN}"
+    read -p "按回车键返回主菜单..."
+}
+
 # 10. 深度清理旧系统参数 (单次批量 sed 减少磁盘 I/O 损耗)
 clean_sysctl() {
     local params=(
         "net.core.default_qdisc" "net.ipv4.tcp_congestion_control" "net.ipv4.tcp_rmem" "net.ipv4.tcp_wmem"
         "net.ipv4.tcp_notsent_lowat" "net.ipv4.tcp_mtu_probing" "net.ipv4.tcp_base_mss" "net.ipv4.tcp_sack"
-        "net.ipv4.tcp_dsack" "net.core.somaxconn" "net.core.netdev_max_backlog" "net.ipv4.tcp_max_syn_backlog"
-        "net.ipv4.tcp_tw_reuse" "net.ipv4.tcp_fin_timeout" "net.ipv4.tcp_keepalive_time" "net.ipv4.tcp_fastopen"
-        "net.ipv4.tcp_slow_start_after_idle" "net.core.rmem_max" "net.core.wmem_max" "net.core.rmem_default"
-        "net.core.wmem_default" "net.ipv4.udp_rmem_min" "net.ipv4.udp_wmem_min" "net.ipv4.ip_local_port_range"
+        "net.ipv4.tcp_dsack" "net.core.somaxconn" "net.core.netdev_max_backlog" "net.core.netdev_budget"
+        "net.core.optmem_max" "net.ipv4.tcp_max_syn_backlog" "net.ipv4.tcp_tw_reuse" "net.ipv4.tcp_fin_timeout"
+        "net.ipv4.tcp_keepalive_time" "net.ipv4.tcp_fastopen" "net.ipv4.tcp_slow_start_after_idle"
+        "net.core.rmem_max" "net.core.wmem_max" "net.core.rmem_default" "net.core.wmem_default"
+        "net.ipv4.udp_rmem_min" "net.ipv4.udp_wmem_min" "net.ipv4.ip_local_port_range"
         "net.ipv4.ip_forward" "net.ipv6.conf.all.forwarding" "net.ipv6.conf.default.forwarding"
         "net.ipv6.conf.all.accept_ra" "net.ipv6.conf.default.accept_ra" "net.ipv6.route.max_size"
         "vm.swappiness" "vm.vfs_cache_pressure" "vm.dirty_ratio" "vm.dirty_background_ratio"
@@ -336,9 +510,11 @@ clean_sysctl() {
             sed -i "$sed_expr" /etc/sysctl.conf
         fi
     fi
+    mkdir -p /etc/sysctl.d
+    rm -f "$BBR_SYSCTL_FILE"
 }
 
-# 11. 写入全栈底层优化 (依据模式定制参数)
+# 11. 写入全栈底层优化 (解耦写入 /etc/sysctl.d/99-bbr-tune.conf)
 write_base_sysctl() {
     local mode=$1
 
@@ -366,9 +542,9 @@ EOF
     # 差异化配置参数 (模式 1: 综合稳健 | 模式 2: 纯代理极致 | 模式 3: 极客手工)
     local pipe_size=524288
     local udp_max=33554432
-    local q_somaxconn=4096
-    local q_backlog=8192
-    local q_syn_backlog=4096
+    local q_somaxconn=8192
+    local q_backlog=16384
+    local q_syn_backlog=8192
     local fin_to=20
     local keepalive_t=600
 
@@ -390,8 +566,12 @@ EOF
         keepalive_t=600
     fi
 
-    # 3. 写入基础全栈优化参数
-    cat >> /etc/sysctl.conf << EOF
+    # 3. 写入独立全栈优化配置文件 (与系统全局配置彻底解耦)
+    cat > "$BBR_SYSCTL_FILE" << EOF
+# ====================================================================
+# BBRv3-Onekey 全栈网络极客调优独立配置 (v2.4.0)
+# ====================================================================
+
 # --- 系统级并发与 Xray/代理零拷贝管道 ---
 fs.file-max=1048576
 fs.inotify.max_user_watches=524288
@@ -406,9 +586,11 @@ net.core.wmem_default=262144
 net.ipv4.udp_rmem_min=8192
 net.ipv4.udp_wmem_min=8192
 
-# --- 并发连接队列扩容 ---
+# --- 并发连接队列与软中断吞吐扩容 (吸收 tcpfit 精华) ---
 net.core.somaxconn=${q_somaxconn}
 net.core.netdev_max_backlog=${q_backlog}
+net.core.netdev_budget=600
+net.core.optmem_max=65536
 net.ipv4.tcp_max_syn_backlog=${q_syn_backlog}
 
 # --- TCP 状态机极速回收与保活 ---
@@ -436,13 +618,13 @@ EOF
 
     # 4. 针对 IPv4 / 双栈网络
     if [ "$HAS_IPV4" = "true" ]; then
-        echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-        echo "net.ipv4.ip_local_port_range=1024 65535" >> /etc/sysctl.conf
+        echo "net.ipv4.ip_forward=1" >> "$BBR_SYSCTL_FILE"
+        echo "net.ipv4.ip_local_port_range=1024 65535" >> "$BBR_SYSCTL_FILE"
     fi
 
     # 5. 针对 IPv6 / 双栈网络 (注入断网守护)
     if [ "$HAS_IPV6" = "true" ]; then
-        cat >> /etc/sysctl.conf << EOF
+        cat >> "$BBR_SYSCTL_FILE" << EOF
 net.ipv6.conf.all.forwarding=1
 net.ipv6.conf.default.forwarding=1
 net.ipv6.conf.all.accept_ra=2
@@ -453,7 +635,7 @@ EOF
 
     # 6. 针对 Netfilter Conntrack 动态支持
     if lsmod 2>/dev/null | grep -q conntrack || [ -f /proc/sys/net/netfilter/nf_conntrack_max ]; then
-        cat >> /etc/sysctl.conf << EOF
+        cat >> "$BBR_SYSCTL_FILE" << EOF
 net.netfilter.nf_conntrack_max=1048576
 net.netfilter.nf_conntrack_tcp_timeout_established=1200
 net.netfilter.nf_conntrack_tcp_timeout_close_wait=15
@@ -831,10 +1013,12 @@ verify_status() {
     local fastopen=$(sysctl -n net.ipv4.tcp_fastopen 2>/dev/null)
     local idle_ss=$(sysctl -n net.ipv4.tcp_slow_start_after_idle 2>/dev/null)
     local mtu_p=$(sysctl -n net.ipv4.tcp_mtu_probing 2>/dev/null)
+    local initcwnd_val=$(ip -4 route show default 2>/dev/null | grep -oE 'initcwnd [0-9]+' || echo "默认 (10)")
     
     echo -e "  ├─ 动态 TCP 读写缓冲 : ${GREEN}${rmem}${PLAIN} / ${GREEN}${wmem}${PLAIN}"
     echo -e "  ├─ TCP 防缓冲膨胀延迟: $(if [ "$notsent" = "16384" ]; then echo -e "${GREEN}已开启 (16KB)${PLAIN}"; else echo -e "${YELLOW}${notsent:-默认}${PLAIN}"; fi)"
     echo -e "  ├─ TCP Fast Open(TFO): $(if [ "$fastopen" = "3" ]; then echo -e "${GREEN}双向已开启 (模式 3)${PLAIN}"; else echo -e "${YELLOW}${fastopen:-默认}${PLAIN}"; fi)"
+    echo -e "  ├─ 初始窗口首包秒开  : $(if [[ "$initcwnd_val" =~ "32" ]]; then echo -e "${GREEN}${initcwnd_val} (免RTT秒开握手)${PLAIN}"; else echo -e "${YELLOW}${initcwnd_val}${PLAIN}"; fi)"
     echo -e "  ├─ 空闲连接免慢启动  : $(if [ "$idle_ss" = "0" ]; then echo -e "${GREEN}已开启 (常态满速)${PLAIN}"; else echo -e "${YELLOW}${idle_ss:-默认}${PLAIN}"; fi)"
     echo -e "  └─ PMTU 动态黑洞探测 : $(if [ "$mtu_p" = "1" ]; then echo -e "${GREEN}已开启 (防分片丢包)${PLAIN}"; else echo -e "${YELLOW}${mtu_p:-默认}${PLAIN}"; fi)"
 
@@ -853,13 +1037,21 @@ verify_status() {
     local somaxconn=$(sysctl -n net.core.somaxconn 2>/dev/null)
     local file_max=$(sysctl -n fs.file-max 2>/dev/null)
     local pipe_size=$(sysctl -n fs.pipe-max-size 2>/dev/null)
+    local budget=$(sysctl -n net.core.netdev_budget 2>/dev/null)
 
     echo -e "  ├─ TIME_WAIT 极速复用 : $(if [ "$tw_reuse" = "1" ]; then echo -e "${GREEN}已开启 (防端口耗尽)${PLAIN}"; else echo -e "${YELLOW}${tw_reuse:-默认}${PLAIN}"; fi)"
     echo -e "  ├─ FIN 废弃连接超时   : ${GREEN}${fin_time}秒${PLAIN}"
     echo -e "  ├─ 出站可用端口池范围 : ${GREEN}${port_range}${PLAIN} (扩容至6.4万端口)"
     echo -e "  ├─ 监听队列 / 网卡队列: ${GREEN}${somaxconn}${PLAIN} / ${GREEN}$(sysctl -n net.core.netdev_max_backlog 2>/dev/null)${PLAIN}"
+    echo -e "  ├─ 软中断单轮处理配额 : ${GREEN}${budget:-300}${PLAIN} (netdev_budget 扩容防丢包)"
     echo -e "  ├─ 系统最大文件句柄   : ${GREEN}${file_max}${PLAIN} (突破100万并发)"
     echo -e "  └─ Xray 零拷贝管道缓冲: ${GREEN}$((pipe_size/1024))KB${PLAIN} (提升 splice 吞吐)"
+
+    echo -e "${BLUE}------------------------------------------------------------------${PLAIN}"
+    echo -e "${YELLOW}【独立配置架构与出厂容灾快照】${PLAIN}"
+    echo -e "  ├─ 独立调优参数文件   : $(if [ -f "$BBR_SYSCTL_FILE" ]; then echo -e "${GREEN}已配置 ($BBR_SYSCTL_FILE)${PLAIN}"; else echo -e "${YELLOW}未配置/使用全局${PLAIN}"; fi)"
+    echo -e "  ├─ 出厂系统原始快照   : $(if [ -f "$SNAPSHOT_FILE" ]; then echo -e "${GREEN}已就绪 ($SNAPSHOT_FILE)${PLAIN}"; else echo -e "${YELLOW}尚未生成${PLAIN}"; fi)"
+    echo -e "  └─ initcwnd 32 守护服务: $(if systemctl is-enabled bbr-initcwnd.service >/dev/null 2>&1; then echo -e "${GREEN}运行中 (开机自启注入)${PLAIN}"; else echo -e "${YELLOW}未启用${PLAIN}"; fi)"
 
     echo -e "${BLUE}------------------------------------------------------------------${PLAIN}"
     echo -e "${YELLOW}【IP 栈与虚拟内存调度】${PLAIN}"
@@ -947,10 +1139,12 @@ while true; do
     echo -e "     ${YELLOW}└─ 严格遵循同策略内核精准检测，一键热升级云端脚本与内核。${PLAIN}"
     echo -e "  ${BLUE}5. 🛠️ 自定义选择内核分支与版本 (MAIN / LTS / EDGE / RT / 锁定版本)${PLAIN}"
     echo -e "     ${YELLOW}└─ 硬件自适应定制子菜单，自由切换 4 大分支或精确安装并锁定指定版本号。${PLAIN}"
+    echo -e "  ${YELLOW}8. ⏪ 一键回滚还原到系统出厂网络配置 (Rollback to Factory)${PLAIN}"
+    echo -e "     ${YELLOW}└─ 安全一键卸载调优配置、撤销 initcwnd 32，还原系统出厂默认网络参数。${PLAIN}"
     echo -e "  ${BLUE}9. 🔍 详细体检内核与网络加速算法生效状态 (Status Check)${PLAIN}"
     echo -e "  ${RED}0. 退出脚本${PLAIN}"
     echo -e "${BLUE}==================================================${PLAIN}"
-    read -p "请输入数字 [0-5, 9] (默认: ${DEFAULT_CHOICE}): " CHOICE
+    read -p "请输入数字 [0-5, 8-9] (默认: ${DEFAULT_CHOICE}): " CHOICE
 
     # 动态应用智能默认选项
     if [ -z "$CHOICE" ]; then CHOICE=$DEFAULT_CHOICE; fi
@@ -996,6 +1190,7 @@ while true; do
                 break
             fi
             ;;
+        8) rollback_to_factory ;;
         9) verify_status ;;
         0) echo -e "${BLUE}已安全退出脚本。${PLAIN}"; exit 0 ;;
         *) echo -e "${RED}[错误] 输入无效，请重新选择！${PLAIN}"; sleep 1 ;;
@@ -1003,12 +1198,14 @@ while true; do
 done
 
 # ====================================================================
-# 15. 执行优化写入流程
+# 15. 执行优化写入流程 (自动出厂快照备份 + 解耦独立配置 + initcwnd 32 注入)
 # ====================================================================
+take_factory_snapshot
 auto_manage_swap
 solidify_virtio_drivers
 clean_sysctl
 write_base_sysctl "$CHOICE"
+apply_and_persist_initcwnd
 
 if [ "$CHOICE" -eq 1 ]; then
     SCENARIO="[小白/一键] 综合环境稳健全栈调优 (建站+代理)"
@@ -1021,10 +1218,10 @@ if [ "$CHOICE" -eq 1 ]; then
 
     CONFIG_SUMMARY="BBRv3 + FQ + 稳健TCP缓冲($((MAX_MEM_BYTES/1024/1024))MB) + 32MB UDP/QUIC (防OOM保活)"
     
-    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_rmem=4096 87380 ${MAX_MEM_BYTES}" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_wmem=4096 65536 ${MAX_MEM_BYTES}" >> /etc/sysctl.conf
+    echo "net.core.default_qdisc=fq" >> "$BBR_SYSCTL_FILE"
+    echo "net.ipv4.tcp_congestion_control=bbr" >> "$BBR_SYSCTL_FILE"
+    echo "net.ipv4.tcp_rmem=4096 87380 ${MAX_MEM_BYTES}" >> "$BBR_SYSCTL_FILE"
+    echo "net.ipv4.tcp_wmem=4096 65536 ${MAX_MEM_BYTES}" >> "$BBR_SYSCTL_FILE"
 
 elif [ "$CHOICE" -eq 2 ]; then
     SCENARIO="[新机/开荒] 纯代理极致加速全栈调优 (翻墙专机)"
@@ -1037,10 +1234,10 @@ elif [ "$CHOICE" -eq 2 ]; then
 
     CONFIG_SUMMARY="BBRv3 + FQ + 满血TCP缓冲($((MAX_MEM_BYTES/1024/1024))MB) + 64MB UDP/QUIC (极速状态机回收)"
     
-    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_rmem=4096 87380 ${MAX_MEM_BYTES}" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_wmem=4096 65536 ${MAX_MEM_BYTES}" >> /etc/sysctl.conf
+    echo "net.core.default_qdisc=fq" >> "$BBR_SYSCTL_FILE"
+    echo "net.ipv4.tcp_congestion_control=bbr" >> "$BBR_SYSCTL_FILE"
+    echo "net.ipv4.tcp_rmem=4096 87380 ${MAX_MEM_BYTES}" >> "$BBR_SYSCTL_FILE"
+    echo "net.ipv4.tcp_wmem=4096 65536 ${MAX_MEM_BYTES}" >> "$BBR_SYSCTL_FILE"
 
 elif [ "$CHOICE" -eq 3 ]; then
     SCENARIO="[高手/极客] 目标节点精准手工调优"
@@ -1068,10 +1265,10 @@ elif [ "$CHOICE" -eq 3 ]; then
 
     CONFIG_SUMMARY="BBRv3 + FQ + 精准BDP极限缓冲 ($((BDP_BYTES/1024/1024))MB, 目标:${TARGET_BW}M/${TARGET_RTT}ms)"
     
-    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_rmem=4096 87380 ${BDP_BYTES}" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_wmem=4096 65536 ${BDP_BYTES}" >> /etc/sysctl.conf
+    echo "net.core.default_qdisc=fq" >> "$BBR_SYSCTL_FILE"
+    echo "net.ipv4.tcp_congestion_control=bbr" >> "$BBR_SYSCTL_FILE"
+    echo "net.ipv4.tcp_rmem=4096 87380 ${BDP_BYTES}" >> "$BBR_SYSCTL_FILE"
+    echo "net.ipv4.tcp_wmem=4096 65536 ${BDP_BYTES}" >> "$BBR_SYSCTL_FILE"
 fi
 
 # 16. 开始执行源配置与更新
@@ -1120,7 +1317,8 @@ if [ "$NEED_REBOOT" = "true" ]; then
 fi
 
 # 19. 应用系统优化配置 (-e 忽略未知参数，确保配置最大化加载)
-sysctl -e -p /etc/sysctl.conf > /dev/null 2>&1
+# 19. 应用系统优化配置 (-e 忽略未知参数，解耦加载独立调优文件)
+sysctl -e -p "$BBR_SYSCTL_FILE" > /dev/null 2>&1
 
 # 20. 漂亮的执行结果输出
 clear
@@ -1131,7 +1329,7 @@ echo -e "使用模式：${BLUE}${SCENARIO}${PLAIN}"
 echo -e "匹配内核：${BLUE}${KERNEL_PKG}${PLAIN} (${KERNEL_BRANCH_NAME})"
 echo -e "参数总览：${BLUE}${CONFIG_SUMMARY}${PLAIN}"
 echo -e "网络拓扑：${BLUE}${IP_STACK_TEXT}${PLAIN}"
-echo -e "高级特性：${YELLOW}VirtIO驱动固化 / UDP扩容 / TIME_WAIT回收 / PMTU探测 / Swap气囊${PLAIN} 已全开"
+echo -e "高级特性：${YELLOW}VirtIO固化 / UDP扩容 / initcwnd 32秒开 / TIME_WAIT回收 / PMTU探测 / Swap气囊${PLAIN} 已全开"
 echo -e "${GREEN}==================================================${PLAIN}"
 
 # 21. 智能倒计时重启机制
