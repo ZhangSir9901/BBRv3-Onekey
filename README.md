@@ -86,3 +86,51 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ZhangSir9901/BBRv3-Onekey/ma
 * **全新交互菜单与场景精细分流**：
   - 新增【综合环境稳健调优】（选项 1）：专为建站+代理多业务共存机器设计，智能均衡分配内存，杜绝高突发流量挤爆 Web/数据库（防 OOM）；
   - 新增【纯代理极致加速】（选项 2）：专为纯翻墙、专线、中转节点打造，暴力扩容 UDP/QUIC 缓冲至 64MB，满血开启 1MB 零拷贝管道与极速状态机回收；
+  - 规范重构【目标节点手工调优】（选项 3）与【状态详细体检】（选项 9）；
+  - 新增【一键检查与在线升级】（选项 4）：打通云端调优脚本热更新与官方 XanMod 内核版本智能比对升级。
+* **Debian 13 Sequoia PGP 验签适配**：支持新一代 `sqv` 验证器，实现 `.gpg` 二进制与 `.asc` 原生 ASCII Armor 双轨密钥自动适配，并强制固化 `644` 权限防读取拒绝。
+* **系统 dpkg 中断状态自愈**：脚本启动与安装节点强制注入 `dpkg --configure -a` 与依赖自愈，彻底扫清历史中断遗留的包管理器锁死障碍。
+* **Debian 13 (Trixie) 全栈自适应**：增强发行版识别机制，自动兼容测试版、滚动版及最小化镜像；统一采用深度调优的稳定版 LTS 高性能 BBRv3 内核。
+* **修复 x64v1 指令集 404 报错**：识别到基础通用指令集时自动锁定官方专属 LTS x64v1 内核，杜绝安装时报包不存在的致命错误。
+* **加固算术表达式注入防线**：极客模式输入参数引入纯数字正则过滤，彻底消除 Bash 算术扩展执行任意命令的安全风险。
+* **磁盘 I/O 批量流水线优化**：将 `clean_sysctl` 重构为单次批量 `sed` 处理，大幅降低磁盘覆写次数与执行耗时。
+
+> 详细历史版本记录请参阅：[CHANGELOG.md](file:///d:/Antigravity%20IDE/projects/BBRv3-Onekey/CHANGELOG.md)。
+
+---
+
+## 💬 作者与技术支持
+
+如果您在部署中遇到难题，或者探讨底层网络与系统调优技术，欢迎与我交流！
+
+* ![WeChat](https://img.shields.io/badge/微信-07C160?style=flat-square&logo=wechat&logoColor=white) `jiujiujiayi666`
+* [![Telegram](https://img.shields.io/badge/Telegram-2CA5E0?style=flat-square&logo=telegram&logoColor=white)](https://t.me/YuC2027) [@YuC2027](https://t.me/YuC2027)
+* [![Website](https://img.shields.io/badge/官网-乾旭网络-1081C1?style=flat-square&logo=googlechrome&logoColor=white)](https://www.qianxu.vip) [www.qianxu.vip](https://www.qianxu.vip)
+
+💡 如果您对软件有其它建议，欢迎在仓库提交 **Issues**；如果有其它定制需求，请通过上方联系方式与我联系。
+
+---
+
+## ☕ 赞助与打赏
+
+如果这个项目为你节省了宝贵的时间，或者你惊叹于它极度丝滑且硬核的代码艺术，欢迎打赏支持！您的支持是我持续开源与输出硬核代码的最大动力！
+
+### ![Alipay](https://img.shields.io/badge/支付宝-Alipay-1677FF?style=flat-square&logo=alipay&logoColor=white)
+
+👇 鼠标悬停在下方代码框内，点击右上角即可一键复制：
+
+```text
+pdlr@qq.com
+```
+
+### ![Tether USDT](https://img.shields.io/badge/USDT-TRC20-26A17B?style=flat-square&logo=tether&logoColor=white)
+
+👇 鼠标悬停在下方代码框内，点击右上角即可一键复制：
+
+```text
+TXS6K4jaomQn26QsouSkdUZPDRo8Rd63zj
+```
+
+---
+
+> *"Talk is cheap. Show me the code."* —— 保持热爱，奔赴山海。
