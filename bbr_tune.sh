@@ -1,5 +1,5 @@
 #!/bin/bash # 核心作用：Debian/Ubuntu 一键安装 XanMod BBRv3 与全栈网络极致性能动态调优生命周期管理
-# SCRIPT_VERSION="2.2.0"
+# SCRIPT_VERSION="2.3.0"
 
 # ====================================================================
 # 项目名称: Debian/Ubuntu XanMod BBRv3 智能网络生命周期管理 (全栈极致版)
@@ -239,17 +239,18 @@ if [ -z "$CODENAME" ]; then
     fi
 fi
 
-# 内核包名策略适配 (解决 x64v1 无标准版崩溃问题，并针对 Debian 12/13 提供最高稳定性)
+# 内核策略智能初选 (老旧 CPU 强制默认锁定 LTS，满血硬件统一默认选用 MAIN 最新主线 7.2.x 版)
 if [ "$CPU_TIER" = "x64v1" ]; then
     # XanMod 官方仓库仅在 LTS 分支提供 x64v1 兜底支持
     KERNEL_PKG="linux-xanmod-lts-x64v1"
-elif [ "$ID" = "debian" ]; then
-    # Debian 12 与 13 采用稳定且深度调优的 LTS 分支（内置完整 BBRv3 + FQ）
-    KERNEL_PKG="linux-xanmod-lts-${CPU_TIER}"
+    KERNEL_BRANCH_NAME="LTS (6.18.x 长期维护稳定版)"
 else
-    # Ubuntu LTS 默认选用匹配 CPU 指令集的最新版内核
+    # 满血硬件 (x64v2 / x64v3): 统一默认选用 MAIN 最新主线稳定版 (当前 7.2.x，极速吞吐与最新 BBRv3)
     KERNEL_PKG="linux-xanmod-${CPU_TIER}"
+    KERNEL_BRANCH_NAME="MAIN (7.2.x 最新主线稳定版)"
 fi
+KERNEL_EXTRA_PKG=""
+KERNEL_HOLD=false
 
 # 7. 定义通用命令重试函数
 retry_command() {
@@ -462,7 +463,238 @@ EOF
 }
 
 # ====================================================================
-# 12. 一键检查与在线升级 (选项4: 脚本 & XanMod 内核)
+# 12. XanMod 官方存储库安全配置与多轨道密钥校验 (双轨 gpg / asc 原生自愈)
+# ====================================================================
+ensure_xanmod_repo() {
+    local keyring_file=""
+    if [ -s /etc/apt/keyrings/xanmod-archive-keyring.gpg ]; then
+        keyring_file="/etc/apt/keyrings/xanmod-archive-keyring.gpg"
+    elif [ -s /etc/apt/keyrings/xanmod-archive-keyring.asc ]; then
+        keyring_file="/etc/apt/keyrings/xanmod-archive-keyring.asc"
+    fi
+
+    if [ -n "$keyring_file" ] && [ -f /etc/apt/sources.list.d/xanmod-release.list ] && grep -q "deb.xanmod.org" /etc/apt/sources.list.d/xanmod-release.list 2>/dev/null; then
+        return 0
+    fi
+
+    echo -e "\n${BLUE}[存储库配置] 正在配置 XanMod 官方 APT 存储库与安全密钥...${PLAIN}"
+    rm -f /etc/apt/sources.list.d/xanmod-release.list
+    install -d -m 0755 /etc/apt/keyrings
+    local tmp_key="/tmp/xanmod.key"
+    rm -f "$tmp_key"
+
+    local fake_ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    curl -fsSL -A "${fake_ua}" --connect-timeout 10 --retry 3 https://dl.xanmod.org/archive.key -o "$tmp_key" 2>/dev/null
+    if [ ! -s "$tmp_key" ] || ! grep -q "PGP PUBLIC KEY" "$tmp_key"; then
+        wget -qO "$tmp_key" -U "${fake_ua}" --timeout=10 --tries=3 https://dl.xanmod.org/archive.key >/dev/null 2>&1
+    fi
+    if [ ! -s "$tmp_key" ] || ! grep -q "PGP PUBLIC KEY" "$tmp_key"; then
+        curl -fsSL -A "${fake_ua}" --connect-timeout 10 --retry 3 https://gitlab.com/afrd.gpg -o "$tmp_key" 2>/dev/null
+    fi
+
+    if [ -s "$tmp_key" ] && grep -q "PGP PUBLIC KEY" "$tmp_key"; then
+        if command -v gpg >/dev/null 2>&1; then
+            keyring_file="/etc/apt/keyrings/xanmod-archive-keyring.gpg"
+            gpg --dearmor --yes -o "$keyring_file" "$tmp_key" >/dev/null 2>&1
+        fi
+        if [ ! -s "$keyring_file" ]; then
+            keyring_file="/etc/apt/keyrings/xanmod-archive-keyring.asc"
+            cp -f "$tmp_key" "$keyring_file"
+        fi
+        chmod 644 "$keyring_file" 2>/dev/null || true
+        rm -f "$tmp_key"
+    else
+        echo -e "${RED}[错误] XanMod PGP 证书获取失败，请检查网络！${PLAIN}"
+        return 1
+    fi
+
+    echo "deb [signed-by=${keyring_file}] http://deb.xanmod.org ${CODENAME} main" | tee /etc/apt/sources.list.d/xanmod-release.list >/dev/null
+    dpkg --configure -a >/dev/null 2>&1
+    DEBIAN_FRONTEND=noninteractive retry_command apt update >/dev/null
+    return 0
+}
+
+# ====================================================================
+# 13. 系统当前 XanMod 内核策略智能探测 (同策略升级核心基石)
+# ====================================================================
+detect_installed_xanmod_pkg() {
+    # 1. 优先查已安装的 meta 包 (如 linux-xanmod-x64v3, linux-xanmod-lts-x64v3 等)
+    local installed_meta
+    installed_meta=$(dpkg -l 'linux-xanmod*' 2>/dev/null | grep -E '^ii\s+linux-xanmod(-[a-z0-9]+)?-x64v[123]' | awk '{print $2}' | head -n 1)
+    if [ -n "$installed_meta" ]; then
+        echo "$installed_meta"
+        return
+    fi
+
+    # 2. 若无 meta 包，则根据当前运行内核特征推断本地策略
+    local current_k=$(uname -r)
+    if [[ "$current_k" == *"edge"* ]]; then
+        echo "linux-xanmod-edge-${CPU_TIER}"
+        return
+    elif [[ "$current_k" == *"-rt-"* ]] || [[ "$current_k" == *"rt"* ]]; then
+        echo "linux-xanmod-rt-${CPU_TIER}"
+        return
+    elif [[ "$current_k" =~ ^6\. ]] || [ "$CPU_TIER" = "x64v1" ]; then
+        echo "linux-xanmod-lts-${CPU_TIER}"
+        return
+    fi
+
+    # 3. 兜底返回主线包
+    echo "linux-xanmod-${CPU_TIER}"
+}
+
+# ====================================================================
+# 14. 硬件自适应内核分支选择与自定义版本定制子菜单
+# ====================================================================
+select_custom_kernel_menu() {
+    while true; do
+        clear
+        echo -e "${BLUE}==================================================================${PLAIN}"
+        echo -e "       ⚙️  XanMod 内核分支自选与自定义版本管理子菜单"
+        echo -e "${BLUE}==================================================================${PLAIN}"
+        echo -e "当前硬件架构：${GREEN}${CPU_TIER_TEXT}${PLAIN}"
+        echo -e "当前选用策略：${YELLOW}${KERNEL_PKG}${PLAIN} (${KERNEL_BRANCH_NAME})"
+        echo -e "${BLUE}------------------------------------------------------------------${PLAIN}"
+
+        if [ "$CPU_TIER" = "x64v1" ]; then
+            echo -e "${YELLOW}⚠️  【硬件架构受限通知】${PLAIN}"
+            echo -e "检测到本机 CPU 为基础指令集架构 (x86-64-v1)。"
+            echo -e "XanMod 官方 MAIN、EDGE、RT 分支已全面彻底废止 x64v1 编译支持，"
+            echo -e "强行安装将导致无法引导或 APT 404 错误。"
+            echo -e "官方仓库仅在 LTS (长期维护) 分支保留了 x64v1 专属兼容包："
+            echo -e "  ${GREEN}1. LTS (Long Term Support 6.18.x 长期维护稳定版) [唯一受支持]${PLAIN}"
+            echo -e "  ${RED}0. 返回主菜单${PLAIN}"
+            echo -e "${BLUE}==================================================================${PLAIN}"
+            read -p "请输入选项 [0-1] (默认: 1): " sub_choice
+            sub_choice=${sub_choice:-1}
+            case "$sub_choice" in
+                1)
+                    KERNEL_PKG="linux-xanmod-lts-x64v1"
+                    KERNEL_BRANCH_NAME="LTS (6.18.x 长期维护稳定版)"
+                    KERNEL_EXTRA_PKG=""
+                    KERNEL_HOLD=false
+                    echo -e "${GREEN}已确认锁定 LTS 稳定版！${PLAIN}"
+                    sleep 1
+                    return 0
+                    ;;
+                0) return 0 ;;
+                *) echo -e "${RED}输入无效！${PLAIN}"; sleep 1 ;;
+            esac
+        else
+            # 满血架构 x64v2 / x64v3
+            echo -e "请根据您的业务场景选择内核分支："
+            echo -e "  ${GREEN}1. MAIN (Stable Mainline 7.2.x 最新主线版) [🚀 性能之王 - 默认推荐]${PLAIN}"
+            echo -e "     ${YELLOW}└─ 最新协议栈 + 最新 BBRv3 + LLVM 深度编译优化，绝大多数网络场景首选。${PLAIN}"
+            echo -e "  ${GREEN}2. LTS  (Long Term Support 6.18.x 长期维护稳定版) [🛡️ 企业稳健]${PLAIN}"
+            echo -e "     ${YELLOW}└─ 极致稳定性优先，企业级生产系统、Docker、建站共存首选。${PLAIN}"
+            echo -e "  ${BLUE}3. EDGE (Rolling Release 7.3.x 激进尝鲜滚动版) [⚡ 极客折腾]${PLAIN}"
+            echo -e "     ${YELLOW}└─ 尝鲜最新调度器与实验性特性，适合发烧友测试体验。${PLAIN}"
+            echo -e "  ${BLUE}4. RT   (Stable Real-time 6.18.x-rt 全抢占实时内核) [⏱️ 极致低抖动]${PLAIN}"
+            echo -e "     ${YELLOW}└─ PREEMPT_RT 硬实时补丁，确定性零抖动微秒级延迟，适合游戏/低延迟专用。${PLAIN}"
+            echo -e "  ${YELLOW}5. 📌 自定义指定历史版本号 (例如指定 7.2.15-xanmod1 / 支持版本锁定)${PLAIN}"
+            echo -e "     ${YELLOW}└─ 手动输入精确版本号，支持 apt-mark hold 防止意外被系统更新覆盖。${PLAIN}"
+            echo -e "  ${RED}0. 返回主菜单 (保持当前选择)${PLAIN}"
+            echo -e "${BLUE}==================================================================${PLAIN}"
+            read -p "请输入选项 [0-5] (默认: 1): " sub_choice
+            sub_choice=${sub_choice:-1}
+            case "$sub_choice" in
+                1)
+                    KERNEL_PKG="linux-xanmod-${CPU_TIER}"
+                    KERNEL_BRANCH_NAME="MAIN (7.2.x 最新主线稳定版)"
+                    KERNEL_EXTRA_PKG=""
+                    KERNEL_HOLD=false
+                    echo -e "${GREEN}已切换为: MAIN 最新主线稳定版 (${KERNEL_PKG})${PLAIN}"
+                    sleep 1
+                    return 0
+                    ;;
+                2)
+                    KERNEL_PKG="linux-xanmod-lts-${CPU_TIER}"
+                    KERNEL_BRANCH_NAME="LTS (6.18.x 长期维护稳定版)"
+                    KERNEL_EXTRA_PKG=""
+                    KERNEL_HOLD=false
+                    echo -e "${GREEN}已切换为: LTS 长期维护稳定版 (${KERNEL_PKG})${PLAIN}"
+                    sleep 1
+                    return 0
+                    ;;
+                3)
+                    KERNEL_PKG="linux-xanmod-edge-${CPU_TIER}"
+                    KERNEL_BRANCH_NAME="EDGE (7.3.x 激进滚动尝鲜版)"
+                    KERNEL_EXTRA_PKG=""
+                    KERNEL_HOLD=false
+                    echo -e "${GREEN}已切换为: EDGE 激进滚动尝鲜版 (${KERNEL_PKG})${PLAIN}"
+                    sleep 1
+                    return 0
+                    ;;
+                4)
+                    KERNEL_PKG="linux-xanmod-rt-${CPU_TIER}"
+                    KERNEL_BRANCH_NAME="RT (6.18.x-rt 全抢占实时内核)"
+                    KERNEL_EXTRA_PKG=""
+                    KERNEL_HOLD=false
+                    echo -e "${GREEN}已切换为: RT 全抢占实时内核 (${KERNEL_PKG})${PLAIN}"
+                    sleep 1
+                    return 0
+                    ;;
+                5)
+                    ensure_xanmod_repo
+                    echo -e "\n${BLUE}正在从官方源检索可用 XanMod 内核镜像列表...${PLAIN}"
+                    local available_imgs
+                    available_imgs=$(apt-cache madison linux-image-*-xanmod* 2>/dev/null | awk '{print $1}' | sort -u)
+                    if [ -z "$available_imgs" ]; then
+                        echo -e "${RED}[错误] 暂未获取到仓库中的版本列表，请稍后重试！${PLAIN}"
+                        sleep 2
+                        continue
+                    fi
+                    echo -e "${YELLOW}官方仓库匹配当前架构的近期常用版本参考：${PLAIN}"
+                    apt-cache madison linux-image-*-xanmod* 2>/dev/null | grep "${CPU_TIER}" | head -n 8 | awk '{printf "  • %-40s | 版本: %s\n", $1, $3}'
+                    echo -e "${BLUE}------------------------------------------------------------------${PLAIN}"
+                    read -p "请输入您想指定的版本号或关键词 (例如 7.2.15 或完整包名): " custom_ver_input
+                    if [ -z "$custom_ver_input" ]; then
+                        echo -e "${YELLOW}已取消自定义版本输入。${PLAIN}"
+                        sleep 1
+                        continue
+                    fi
+                    local matched_pkg
+                    matched_pkg=$(apt-cache madison linux-image-*-xanmod* 2>/dev/null | grep "${CPU_TIER}" | grep "${custom_ver_input}" | awk '{print $1}' | head -n 1)
+                    if [ -z "$matched_pkg" ]; then
+                        matched_pkg=$(apt-cache madison linux-image-*-xanmod* 2>/dev/null | grep "${custom_ver_input}" | awk '{print $1}' | head -n 1)
+                    fi
+                    if [ -z "$matched_pkg" ]; then
+                        echo -e "${RED}[错误] 仓库中未找到包含 \"${custom_ver_input}\" 的内核包，请核对后重试！${PLAIN}"
+                        sleep 2
+                        continue
+                    fi
+                    local matched_headers="${matched_pkg/linux-image-/linux-headers-}"
+                    echo -e "${GREEN}成功匹配到内核包: ${matched_pkg}${PLAIN}"
+                    if apt-cache show "$matched_headers" >/dev/null 2>&1; then
+                        KERNEL_EXTRA_PKG="$matched_headers"
+                        echo -e "${GREEN}成功匹配到伴随头文件: ${matched_headers}${PLAIN}"
+                    else
+                        KERNEL_EXTRA_PKG=""
+                    fi
+                    read -p "是否在安装后执行 apt-mark hold 锁定此版本（防止 apt upgrade 被覆盖）？[Y:锁定 / N:不锁, 默认Y]: " hold_choice
+                    hold_choice=${hold_choice:-Y}
+                    hold_choice=$(echo "$hold_choice" | tr '[:lower:]' '[:upper:]')
+                    if [ "$hold_choice" = "Y" ]; then
+                        KERNEL_HOLD=true
+                        KERNEL_BRANCH_NAME="自定义锁定版 (${custom_ver_input} [Pinning])"
+                    else
+                        KERNEL_HOLD=false
+                        KERNEL_BRANCH_NAME="自定义指定版 (${custom_ver_input})"
+                    fi
+                    KERNEL_PKG="$matched_pkg"
+                    echo -e "${GREEN}自定义内核配置完成！${PLAIN}"
+                    sleep 1
+                    return 0
+                    ;;
+                0) return 0 ;;
+                *) echo -e "${RED}输入无效，请重新选择！${PLAIN}"; sleep 1 ;;
+            esac
+        fi
+    done
+}
+
+# ====================================================================
+# 15. 一键检查与在线升级 (选项4: 脚本 & XanMod 内核)
 # ====================================================================
 check_and_upgrade() {
     clear
@@ -503,32 +735,34 @@ check_and_upgrade() {
         fi
     fi
 
-    # 2. 检查 XanMod 内核更新
+    # 2. 检查 XanMod 内核更新 (严格遵循同策略内核更新逻辑)
     echo -e "\n${YELLOW}[2/2] 正在检索 XanMod 官方仓库内核更新...${PLAIN}"
     local current_k=$(uname -r)
     if [[ "$current_k" != *"xanmod"* ]]; then
         echo -e "${YELLOW}⚠️ 当前系统正在运行标准发行版内核 (${current_k})，未安装 XanMod 内核！${PLAIN}"
         echo -e "${BLUE}💡 提示：内核升级功能仅面向已部署 XanMod 的系统。${PLAIN}"
-        echo -e "   若需将系统升级为 XanMod BBRv3，请返回主菜单选择 [1]、[2] 或 [3] 进行一键安装。"
+        echo -e "   若需将系统升级为 XanMod BBRv3，请返回主菜单选择 [1]、[2] 或 [5] 进行一键安装。"
     else
-        echo -e "${BLUE}正在同步 XanMod 软件源缓存...${PLAIN}"
-        dpkg --configure -a >/dev/null 2>&1
-        DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1
+        ensure_xanmod_repo
         
-        local installed_k_ver=$(dpkg-query -W -f='${Version}' ${KERNEL_PKG} 2>/dev/null)
-        local latest_k_ver=$(apt-cache madison ${KERNEL_PKG} 2>/dev/null | head -n 1 | awk '{print $3}')
-        [ -z "$latest_k_ver" ] && latest_k_ver=$(LC_ALL=C apt-cache policy ${KERNEL_PKG} 2>/dev/null | grep "Candidate:" | awk '{print $2}')
+        # 精准获取本地系统当前运行/安装的同策略 XanMod 包
+        local target_k_pkg=$(detect_installed_xanmod_pkg)
+        echo -e "${BLUE}正在匹配已安装的同策略 XanMod 内核包: ${GREEN}${target_k_pkg}${PLAIN}"
+        
+        local installed_k_ver=$(dpkg-query -W -f='${Version}' "${target_k_pkg}" 2>/dev/null)
+        local latest_k_ver=$(apt-cache madison "${target_k_pkg}" 2>/dev/null | head -n 1 | awk '{print $3}')
+        [ -z "$latest_k_ver" ] && latest_k_ver=$(LC_ALL=C apt-cache policy "${target_k_pkg}" 2>/dev/null | grep "Candidate:" | awk '{print $2}')
 
         if [ -n "$latest_k_ver" ] && [ -n "$installed_k_ver" ] && [ "$installed_k_ver" != "$latest_k_ver" ]; then
-            echo -e "${GREEN}🚀 检测到 XanMod [${KERNEL_PKG}] 新版本内核发布: ${latest_k_ver}${PLAIN}"
+            echo -e "${GREEN}🚀 检测到 XanMod 同策略 [${target_k_pkg}] 新版本内核发布: ${latest_k_ver}${PLAIN}"
             echo -e "   (当前安装版本: ${installed_k_ver})"
             read -p "是否立即升级内核并更新引导镜像？[Y:升级 / N:跳过, 默认Y]: " UP_K_CHOICE
             UP_K_CHOICE=${UP_K_CHOICE:-Y}
             UP_K_CHOICE=$(echo "$UP_K_CHOICE" | tr '[:lower:]' '[:upper:]')
             if [ "$UP_K_CHOICE" = "Y" ]; then
-                echo -e "\n${BLUE}正在安装 XanMod [${KERNEL_PKG}] 新内核...${PLAIN}"
+                echo -e "\n${BLUE}正在安装 XanMod [${target_k_pkg}] 新内核...${PLAIN}"
                 dpkg --configure -a >/dev/null 2>&1
-                DEBIAN_FRONTEND=noninteractive retry_command apt install ${KERNEL_PKG} -y
+                DEBIAN_FRONTEND=noninteractive retry_command apt install "${target_k_pkg}" -y
                 echo -e "\n${BLUE}正在重新生成完整 Initramfs 镜像并更新 GRUB 引导...${PLAIN}"
                 solidify_virtio_drivers
                 update-initramfs -u -k all >/dev/null 2>&1
@@ -543,7 +777,7 @@ check_and_upgrade() {
                 fi
             fi
         else
-            echo -e "${GREEN}✅ 当前运行的 XanMod [${KERNEL_PKG}] 已是官方最新版本 (${installed_k_ver:-$current_k})，无需重复升级！${PLAIN}"
+            echo -e "${GREEN}✅ 当前运行的同策略 XanMod [${target_k_pkg}] 已是官方最新版本 (${installed_k_ver:-$current_k})，无需重复升级！${PLAIN}"
         fi
     fi
 
@@ -704,17 +938,19 @@ while true; do
     echo -e "${BLUE}==================================================${PLAIN}"
     echo -e "请选择调优模式："
     echo -e "  ${GREEN}1. [小白/一键] 综合环境稳健全栈调优 (🏆 适合建站+代理)${PLAIN}"
-    echo -e "     ${YELLOW}└─ 针对建站/Docker/代理多业务共存，均衡内存防OOM，抗丢包防卡死。${PLAIN}"
+    echo -e "     ${YELLOW}└─ 多业务共存均衡调优，满血硬件默认配 MAIN(7.2)，老旧硬件自动锁定 LTS(6.18)。${PLAIN}"
     echo -e "  ${GREEN}2. [新机/开荒] 纯代理极致加速全栈调优 (🚀 适合翻墙专机)${PLAIN}"
-    echo -e "     ${YELLOW}└─ 专为翻墙/专线/中转机打造，UDP/QUIC极限扩容64M，榨干单兵网络极限。${PLAIN}"
+    echo -e "     ${YELLOW}└─ 专为代理/专线/中转打造，UDP/QUIC极限扩容64M，榨干单兵网络极限。${PLAIN}"
     echo -e "  ${YELLOW}3. [高手/极客] 目标节点精准手工调优 (BDP / 窗口定制)${PLAIN}"
     echo -e "     ${YELLOW}└─ 需手动输入对端测速带宽与延迟，计算绝对理论极限值。${PLAIN}"
     echo -e "  ${BLUE}4. 🔄 一键检查与在线升级 (脚本 & XanMod内核)${PLAIN}"
-    echo -e "     ${YELLOW}└─ 智能检测云端脚本与内核最新版，一键无损热升级。${PLAIN}"
+    echo -e "     ${YELLOW}└─ 严格遵循同策略内核精准检测，一键热升级云端脚本与内核。${PLAIN}"
+    echo -e "  ${BLUE}5. 🛠️ 自定义选择内核分支与版本 (MAIN / LTS / EDGE / RT / 锁定版本)${PLAIN}"
+    echo -e "     ${YELLOW}└─ 硬件自适应定制子菜单，自由切换 4 大分支或精确安装并锁定指定版本号。${PLAIN}"
     echo -e "  ${BLUE}9. 🔍 详细体检内核与网络加速算法生效状态 (Status Check)${PLAIN}"
     echo -e "  ${RED}0. 退出脚本${PLAIN}"
     echo -e "${BLUE}==================================================${PLAIN}"
-    read -p "请输入数字 [0-4, 9] (默认: ${DEFAULT_CHOICE}): " CHOICE
+    read -p "请输入数字 [0-5, 9] (默认: ${DEFAULT_CHOICE}): " CHOICE
 
     # 动态应用智能默认选项
     if [ -z "$CHOICE" ]; then CHOICE=$DEFAULT_CHOICE; fi
@@ -731,9 +967,35 @@ while true; do
                 WARN_CHOICE=$(echo "$WARN_CHOICE" | tr '[:lower:]' '[:upper:]')
                 if [ "$WARN_CHOICE" = "N" ]; then exit 0; fi
             fi
+
+            # 小白模式与开荒模式的内核自适应确认交互
+            if [ "$CPU_TIER" = "x64v1" ]; then
+                echo -e "\n${YELLOW}ℹ️  [内核自适应] 检测到当前 CPU 为基础架构 (x64v1)，官方仅在 LTS 分支提供兼容支持。${PLAIN}"
+                echo -e "   系统已自动锁定安装 LTS 稳定版 (linux-xanmod-lts-x64v1)，不提供其它版本安装选项以防死机。"
+            else
+                echo -e "\n${BLUE}------------------------------------------------------------------${PLAIN}"
+                echo -e "当前硬件架构：${GREEN}${CPU_TIER_TEXT}${PLAIN}"
+                echo -e "默认优选内核：${GREEN}${KERNEL_PKG}${PLAIN} (${KERNEL_BRANCH_NAME})"
+                echo -e "💡 提示：按 [回车] 直接采用默认优选内核；或输入 [C] 打开内核分支自选子菜单"
+                echo -e "${BLUE}------------------------------------------------------------------${PLAIN}"
+                read -p "请确认内核选择 [回车直接继续 / C:选择其它内核]: " K_CUSTOM_INPUT
+                if [[ "$K_CUSTOM_INPUT" =~ ^[Cc]$ ]]; then
+                    select_custom_kernel_menu
+                fi
+            fi
             break
             ;;
         4) check_and_upgrade ;;
+        5)
+            select_custom_kernel_menu
+            read -p "是否立即以此内核开始全栈网络调优并安装？[Y:开始 / N:返回主菜单, 默认Y]: " START_NOW
+            START_NOW=${START_NOW:-Y}
+            START_NOW=$(echo "$START_NOW" | tr '[:lower:]' '[:upper:]')
+            if [ "$START_NOW" = "Y" ]; then
+                CHOICE=1
+                break
+            fi
+            ;;
         9) verify_status ;;
         0) echo -e "${BLUE}已安全退出脚本。${PLAIN}"; exit 0 ;;
         *) echo -e "${RED}[错误] 输入无效，请重新选择！${PLAIN}"; sleep 1 ;;
@@ -813,71 +1075,39 @@ elif [ "$CHOICE" -eq 3 ]; then
 fi
 
 # 16. 开始执行源配置与更新
-echo -e "\n${BLUE}[1/3] 开始配置 XanMod 官方存储库...${PLAIN}"
-rm -f /etc/apt/sources.list.d/xanmod-release.list
-install -d -m 0755 /etc/apt/keyrings
-TMP_KEY="/tmp/xanmod.key"
-rm -f "$TMP_KEY"
-
-echo -e "${YELLOW}正在获取 XanMod PGP 密钥...${PLAIN}"
-FAKE_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-
-curl -fsSL -A "${FAKE_UA}" --connect-timeout 10 --retry 3 https://dl.xanmod.org/archive.key -o "$TMP_KEY" 2>/dev/null
-if [ ! -s "$TMP_KEY" ] || ! grep -q "PGP PUBLIC KEY" "$TMP_KEY"; then
-    wget -qO "$TMP_KEY" -U "${FAKE_UA}" --timeout=10 --tries=3 https://dl.xanmod.org/archive.key >/dev/null 2>&1
-fi
-# 官方 GitLab 备用镜像源
-if [ ! -s "$TMP_KEY" ] || ! grep -q "PGP PUBLIC KEY" "$TMP_KEY"; then
-    curl -fsSL -A "${FAKE_UA}" --connect-timeout 10 --retry 3 https://gitlab.com/afrd.gpg -o "$TMP_KEY" 2>/dev/null
-fi
-
-KEYRING_FILE=""
-if [ -s "$TMP_KEY" ] && grep -q "PGP PUBLIC KEY" "$TMP_KEY"; then
-    # 优先方案 A：若环境存在 gpg，使用 gpg --dearmor 生成二进制 .gpg 密钥
-    if command -v gpg >/dev/null 2>&1; then
-        KEYRING_FILE="/etc/apt/keyrings/xanmod-archive-keyring.gpg"
-        gpg --dearmor --yes -o "$KEYRING_FILE" "$TMP_KEY" >/dev/null 2>&1
-    fi
-    # 备用方案 B (Debian 13 Sequoia sqv / 现代 APT 原生兼容)：
-    # 若 gpg 不可用或转换失败，直接保存为 ASCII Armor (.asc) 形式，Debian 13 sqv 原生完美支持
-    if [ ! -s "$KEYRING_FILE" ]; then
-        KEYRING_FILE="/etc/apt/keyrings/xanmod-archive-keyring.asc"
-        cp -f "$TMP_KEY" "$KEYRING_FILE"
-    fi
-    # 强制赋予 644 权限，确保 _apt 非特权账户可正常读取校验
-    chmod 644 "$KEYRING_FILE" 2>/dev/null || true
-    rm -f "$TMP_KEY"
-else
-    echo -e "${RED}[错误] PGP 证书获取失败！网络被阻断。${PLAIN}"
+echo -e "\n${BLUE}[1/3] 开始配置并同步 XanMod 官方存储库...${PLAIN}"
+ensure_xanmod_repo
+if [ $? -ne 0 ]; then
+    echo -e "${RED}[错误] XanMod 官方源配置失败，无法继续安装内核！${PLAIN}"
     exit 1
 fi
 
-echo "deb [signed-by=${KEYRING_FILE}] http://deb.xanmod.org ${CODENAME} main" | tee /etc/apt/sources.list.d/xanmod-release.list
-dpkg --configure -a >/dev/null 2>&1
-DEBIAN_FRONTEND=noninteractive retry_command apt update >/dev/null
-
-# 17. 智能版本比对 (多语言环境自适应，精准追踪当前 CPU 架构的内核包)
+# 17. 智能版本比对 (多语言环境自适应，精准追踪当前所选内核包)
 SKIP_KERNEL_INSTALL=false
 NEED_REBOOT=false
 
 if dpkg -l | grep -q "${KERNEL_PKG}"; then
-    INSTALLED_VER=$(dpkg-query -W -f='${Version}' ${KERNEL_PKG} 2>/dev/null)
-    LATEST_VER=$(apt-cache madison ${KERNEL_PKG} 2>/dev/null | head -n 1 | awk '{print $3}')
-    [ -z "$LATEST_VER" ] && LATEST_VER=$(LC_ALL=C apt-cache policy ${KERNEL_PKG} 2>/dev/null | grep "Candidate:" | awk '{print $2}')
+    INSTALLED_VER=$(dpkg-query -W -f='${Version}' "${KERNEL_PKG}" 2>/dev/null)
+    LATEST_VER=$(apt-cache madison "${KERNEL_PKG}" 2>/dev/null | head -n 1 | awk '{print $3}')
+    [ -z "$LATEST_VER" ] && LATEST_VER=$(LC_ALL=C apt-cache policy "${KERNEL_PKG}" 2>/dev/null | grep "Candidate:" | awk '{print $2}')
     
     if [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
-        echo -e "\n${GREEN}[提示] XanMod 内核已是对应 CPU 架构最新版 (${INSTALLED_VER})，跳过重装。${PLAIN}"
+        echo -e "\n${GREEN}[提示] XanMod 目标内核已是最新版 (${INSTALLED_VER})，跳过重装。${PLAIN}"
         SKIP_KERNEL_INSTALL=true
     fi
 fi
 
 if [ "$SKIP_KERNEL_INSTALL" = "false" ]; then
-    echo -e "\n${BLUE}[2/3] 正在安装/升级 XanMod [${KERNEL_PKG}] 内核包...${PLAIN}"
+    echo -e "\n${BLUE}[2/3] 正在安装/部署 XanMod [${KERNEL_PKG}] 内核包...${PLAIN}"
     dpkg --configure -a >/dev/null 2>&1
-    DEBIAN_FRONTEND=noninteractive retry_command apt install ${KERNEL_PKG} -y
+    DEBIAN_FRONTEND=noninteractive retry_command apt install ${KERNEL_PKG} ${KERNEL_EXTRA_PKG} -y
     if [ $? -ne 0 ]; then
         echo -e "${RED}[错误] 内核程序安装/升级失败！${PLAIN}"
         exit 1
+    fi
+    if [ "$KERNEL_HOLD" = "true" ]; then
+        apt-mark hold ${KERNEL_PKG} ${KERNEL_EXTRA_PKG} >/dev/null 2>&1
+        echo -e "${GREEN}[版本锁定] 已成功对 ${KERNEL_PKG} 启用 apt-mark hold，防止被后续自动升级覆盖！${PLAIN}"
     fi
     NEED_REBOOT=true
 fi
@@ -898,7 +1128,7 @@ echo -e "${GREEN}==================================================${PLAIN}"
 echo -e "          🎉 内核配置与极客全栈调优执行完毕！"
 echo -e "${GREEN}==================================================${PLAIN}"
 echo -e "使用模式：${BLUE}${SCENARIO}${PLAIN}"
-echo -e "匹配内核：${BLUE}${KERNEL_PKG}${PLAIN} (${CPU_TIER_TEXT})"
+echo -e "匹配内核：${BLUE}${KERNEL_PKG}${PLAIN} (${KERNEL_BRANCH_NAME})"
 echo -e "参数总览：${BLUE}${CONFIG_SUMMARY}${PLAIN}"
 echo -e "网络拓扑：${BLUE}${IP_STACK_TEXT}${PLAIN}"
 echo -e "高级特性：${YELLOW}VirtIO驱动固化 / UDP扩容 / TIME_WAIT回收 / PMTU探测 / Swap气囊${PLAIN} 已全开"
