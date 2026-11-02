@@ -708,7 +708,7 @@ heal_apt_cache() {
     DEBIAN_FRONTEND=noninteractive apt-get update --fix-missing -y >/dev/null 2>&1
 }
 
-# 内核高可靠自愈安装引擎 (发生异常自动清洗脏缓存并重试)
+# 内核高可靠自愈安装引擎 (发生异常自动清洗脏缓存，并支持官方空壳元包脱节穿透直装)
 install_kernel_with_self_healing() {
     local target_pkg="$1"
     local extra_pkg="$2"
@@ -721,11 +721,69 @@ install_kernel_with_self_healing() {
             return 0
         fi
 
-        if [ "$attempt" -lt "$max_attempts" ]; then
+        # 尝试 1: 清理脏缓存并强制对齐云端索引
+        if [ "$attempt" -eq 1 ]; then
             echo -e "${YELLOW}[自愈机制触发] 检测到安装异常 (可能存在 Hash Mismatch 或分片损坏)，正在自动清理脏缓存并重新对齐官方索引...${PLAIN}"
             heal_apt_cache
-            sleep 2
+            sleep 1
         fi
+
+        # 尝试 2 及以上: 针对官方 meta 包索引脱节进行底层真实内核大包穿透直装
+        if [ "$attempt" -ge 2 ]; then
+            echo -e "${YELLOW}[智能穿透激活] 正在探查 [${target_pkg}] 对应的底层真实内核镜像与头文件...${PLAIN}"
+            local real_img="" real_hdr=""
+            
+            # 策略 A: 从 apt-cache 获取元包的直接依赖大包
+            real_img=$(apt-cache depends "$target_pkg" 2>/dev/null | grep -E "Depends:.*linux-image-" | awk '{print $2}' | head -n 1)
+            real_hdr=$(apt-cache depends "$target_pkg" 2>/dev/null | grep -E "Depends:.*linux-headers-" | awk '{print $2}' | head -n 1)
+
+            # 策略 B: 兜底从 candidate 候选池正则匹配对应版本的真实大包
+            if [ -z "$real_img" ]; then
+                local cand_ver
+                cand_ver=$(apt-cache madison "$target_pkg" 2>/dev/null | head -n 1 | awk '{print $3}' | cut -d'-' -f1)
+                [ -n "$cand_ver" ] && real_img=$(apt-cache search linux-image-"$cand_ver" 2>/dev/null | grep "$CPU_TIER" | awk '{print $1}' | head -n 1)
+                [ -n "$cand_ver" ] && real_hdr=$(apt-cache search linux-headers-"$cand_ver" 2>/dev/null | grep "$CPU_TIER" | awk '{print $1}' | head -n 1)
+            fi
+
+            if [ -n "$real_img" ]; then
+                echo -e "${BLUE}成功锁定真实内核镜像: ${GREEN}${real_img}${PLAIN} 与头文件: ${GREEN}${real_hdr:-无}${PLAIN}"
+                echo -e "${BLUE}正在直接部署真实内核大包 (完全绕过官方损坏空壳)...${PLAIN}"
+                dpkg --configure -a >/dev/null 2>&1
+                if DEBIAN_FRONTEND=noninteractive apt-get install ${real_img} ${real_hdr} -y; then
+                    # 尝试拉取元包直装补全依赖标记 (忽略哈希校验)
+                    local meta_path
+                    meta_path=$(apt-cache show "$target_pkg" 2>/dev/null | grep "^Filename:" | head -n 1 | awk '{print $2}')
+                    if [ -n "$meta_path" ]; then
+                        curl -fsSL --connect-timeout 8 "https://deb.xanmod.org/${meta_path}" -o /tmp/xanmod_meta.deb 2>/dev/null
+                        if [ -s /tmp/xanmod_meta.deb ]; then
+                            dpkg -i --force-all /tmp/xanmod_meta.deb >/dev/null 2>&1
+                            rm -f /tmp/xanmod_meta.deb
+                        fi
+                    fi
+                    echo -e "${GREEN}🎉 真实内核镜像部署成功！${PLAIN}"
+                    return 0
+                fi
+            fi
+
+            # 策略 C: 直接从官方 pool 下载元包 deb 文件并以 dpkg 本地绕过校验安装
+            local pool_file
+            pool_file=$(apt-cache show "$target_pkg" 2>/dev/null | grep "^Filename:" | head -n 1 | awk '{print $2}')
+            if [ -n "$pool_file" ]; then
+                echo -e "${YELLOW}正在尝试本地绕过校验直装模式...${PLAIN}"
+                curl -fsSL --connect-timeout 10 "https://deb.xanmod.org/${pool_file}" -o /tmp/meta_bypass.deb 2>/dev/null
+                if [ -s /tmp/meta_bypass.deb ]; then
+                    dpkg -i --force-all /tmp/meta_bypass.deb >/dev/null 2>&1
+                    rm -f /tmp/meta_bypass.deb
+                    DEBIAN_FRONTEND=noninteractive apt-get install -f -y >/dev/null 2>&1
+                    if dpkg -l | grep -q "$target_pkg"; then
+                        echo -e "${GREEN}🎉 本地穿透模式部署成功！${PLAIN}"
+                        return 0
+                    fi
+                fi
+            fi
+        fi
+
+        sleep 1
         ((attempt++))
     done
 

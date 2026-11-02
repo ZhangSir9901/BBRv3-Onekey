@@ -66,7 +66,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ZhangSir9901/BBRv3-Onekey/ma
   - **`initcwnd 32` 起步满速与持久化**：默认路由初始窗口扩容至 32，消除 TLS 握手及首屏首包等待，配套 systemd 开机持久化守护；
   - **解耦独立配置架构**：使用独立的 `/etc/sysctl.d/99-bbr-tune.conf`，与系统原生配置彻底解耦；
   - **出厂网络快照与一键回滚 (选项 8)**：首次调优自动备份原始配置快照，随时支持一键恢复出厂状态；
-  - **APT 脏缓存自愈与 Hash Mismatch 自动修复引擎**：全面升级 `https://deb.xanmod.org` 加密源，并在安装异常时自动执行脏缓存深度清理与云端索引对齐重试，实现全自动静默自愈安装；
+  - **APT 脏缓存自愈与 Hash Mismatch 穿透直装引擎**：全面升级 `https://deb.xanmod.org` 加密源，针对官方空壳元包索引脱节自动穿透解析底层真实镜像大包，彻底攻克官方打包失误造成的 Hash Mismatch；
   - **补充高吞吐软中断参数**：注入 `netdev_budget=600` 与 `optmem_max=65536`，强化软中断与信令吞吐。
 
 ---
